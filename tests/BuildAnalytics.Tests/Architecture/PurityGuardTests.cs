@@ -32,7 +32,7 @@ public sealed class PurityGuardTests
     ];
 
     [Fact]
-    public void Core_assembly_references_no_app_network_or_excel_assemblies()
+    public void CoreAssembly_HasNoForbiddenReferences()
     {
         var referenced = typeof(TimingCalculator).Assembly
             .GetReferencedAssemblies()
@@ -47,7 +47,7 @@ public sealed class PurityGuardTests
     }
 
     [Fact]
-    public void Core_project_file_declares_no_packages_and_no_project_references()
+    public void CoreCsproj_HasNoPackageOrProjectReferences()
     {
         var csproj = File.ReadAllText(Path.Combine(RepoRoot(), "src", "BuildAnalytics.Core", "BuildAnalytics.Core.csproj"));
 
@@ -56,7 +56,7 @@ public sealed class PurityGuardTests
     }
 
     [Fact]
-    public void Core_sources_contain_no_io_network_clock_randomness_or_ambient_environment_usage()
+    public void CoreSources_LexicalScan_HasNoForbiddenTokens()
     {
         var coreRoot = Path.Combine(RepoRoot(), "src", "BuildAnalytics.Core");
         var violations = new List<string>();
@@ -84,6 +84,7 @@ public sealed class PurityGuardTests
     private static bool IsForbiddenAssembly(string name)
         => name.StartsWith("BuildAnalytics.App", StringComparison.Ordinal)
            || name.StartsWith("System.Net.Http", StringComparison.Ordinal)
+           || name.StartsWith("Microsoft.Extensions.Http", StringComparison.Ordinal)
            || name.StartsWith("ClosedXML", StringComparison.Ordinal)
            || name.StartsWith("DocumentFormat.OpenXml", StringComparison.Ordinal)
            || name.StartsWith("ExcelNumberFormat", StringComparison.Ordinal)

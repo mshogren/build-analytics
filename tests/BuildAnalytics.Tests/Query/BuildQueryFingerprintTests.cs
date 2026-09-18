@@ -86,6 +86,36 @@ public sealed class BuildQueryFingerprintTests
             BuildQueryFingerprint.Compute(query));
     }
 
+    [Fact]
+    public void Fingerprint_Organization_is_case_sensitive()
+    {
+        Assert.NotEqual(Fingerprint(Query(organization: "acme")), Fingerprint(Query(organization: "Acme")));
+    }
+
+    [Fact]
+    public void Fingerprint_Project_is_case_sensitive()
+    {
+        Assert.NotEqual(Fingerprint(Query(project: "acme")), Fingerprint(Query(project: "Acme")));
+    }
+
+    [Fact]
+    public void Fingerprint_is_culture_invariant()
+    {
+        var query = Query(resolved: [3, 1, 2, 2], min: new DateTimeOffset(2024, 1, 2, 3, 4, 5, TimeSpan.Zero));
+        var expected = BuildQueryFingerprint.Compute(query);
+        var original = System.Globalization.CultureInfo.CurrentCulture;
+
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("tr-TR");
+            Assert.Equal(expected, BuildQueryFingerprint.Compute(query));
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = original;
+        }
+    }
+
     private static string Fingerprint(BuildQuery query) => BuildQueryFingerprint.Compute(query);
 
     private static BuildQuery Query(

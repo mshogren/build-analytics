@@ -83,6 +83,9 @@ public sealed class MonthlyTimingRollupTests
     [InlineData(100d, 101d, 101d, 100.67d)]
     [InlineData(100.004d, 100.004d, 100.004d, 100.0d)]
     [InlineData(100.006d, 100.006d, 100.006d, 100.01d)]
+    [InlineData(100.125d, 100.125d, 100.125d, 100.13d)]
+    [InlineData(100.375d, 100.375d, 100.375d, 100.38d)]
+    [InlineData(100.625d, 100.625d, 100.625d, 100.63d)]
     public void Averages_round_raw_mean_to_two_decimals(double first, double second, double third, double expected)
     {
         var runs = new[] { Run(queueWaitSeconds: first), Run(queueWaitSeconds: second), Run(queueWaitSeconds: third) };
@@ -223,7 +226,7 @@ public sealed class MonthlyTimingRollupTests
     }
 
     [Fact]
-    public void Summarize_is_deterministic_and_does_not_depend_on_ambient_clock()
+    public void Summarize_RepeatedCalls_ProduceEqualResult()
     {
         var runs = new[] { Run(queueTime: T0), Run(omitTimestamps: true) };
 
@@ -265,6 +268,82 @@ public sealed class MonthlyTimingRollupTests
 
         Assert.Single(summary.Months);
         Assert.Equal(before, summary);
+    }
+
+    [Fact]
+    public void TimingSummary_defensive_copy_survives_caller_mutation()
+    {
+        var emptyTotals = new TimingTotals(0, 0, 0, 0, 0, 0, 0, null, null, null);
+        var source = new List<MonthlyTimingSummary> { new("2024-03", emptyTotals) };
+        var summary = new TimingSummary(emptyTotals, source);
+        var hash = summary.GetHashCode();
+
+        source.Clear();
+        source.Add(new MonthlyTimingSummary("2024-04", emptyTotals));
+
+        Assert.Single(summary.Months);
+        Assert.Equal("2024-03", summary.Months[0].Month);
+        Assert.Equal(hash, summary.GetHashCode());
+    }
+
+    [Fact]
+    public void Summarize_result_is_unaffected_by_mutating_the_input_after_call()
+    {
+        var runs = new List<BuildRun> { Run(queueTime: T0), Run(queueTime: T0.AddDays(1)) };
+        var summary = MonthlyTimingRollup.Summarize(runs);
+        var before = summary;
+
+        runs.Clear();
+
+        Assert.Equal(2, summary.Overall.RunCount);
+        Assert.Single(summary.Months);
+        Assert.Equal(before, summary);
+    }
+
+    [Fact]
+    public void Summarize_RunCount_IncludesIncompleteRuns_NullFinishTime()
+    {
+        var incomplete = TestRuns.Create(queueTime: T0, startTime: T0.AddSeconds(5), finishTime: null);
+
+        var summary = MonthlyTimingRollup.Summarize([incomplete, incomplete, incomplete]);
+
+        Assert.Equal(3, summary.Overall.RunCount);
+    }
+
+    [Fact]
+    public void Summarize_MonthBuckets_IncludeIncompleteRuns()
+    {
+        var incomplete = TestRuns.Create(queueTime: T0, startTime: T0.AddSeconds(5), finishTime: null);
+
+        var summary = MonthlyTimingRollup.Summarize([incomplete]);
+
+        Assert.Equal(1, Assert.Single(summary.Months).Totals.RunCount);
+    }
+
+    [Fact]
+    public void Summarize_Averages_SkipNullMetrics_ButCountsDoNot()
+    {
+        var incomplete = TestRuns.Create(queueTime: T0, startTime: T0.AddSeconds(5), finishTime: null);
+        var complete = TestRuns.Create(queueTime: T0, startTime: T0.AddSeconds(10), finishTime: T0.AddSeconds(30));
+
+        var overall = MonthlyTimingRollup.Summarize([incomplete, complete]).Overall;
+
+        Assert.Equal(2, overall.RunCount);
+        Assert.Equal(7.5d, overall.AverageQueueWaitSeconds);
+        Assert.Equal(20d, overall.AverageRunDurationSeconds);
+        Assert.Equal(30d, overall.AverageTotalDurationSeconds);
+    }
+
+    [Fact]
+    public void Summarize_IncompleteWithoutQueueTime_GoesToUnknownBucket_StillCounted()
+    {
+        var incomplete = TestRuns.Create(queueTime: null, startTime: T0, finishTime: null);
+
+        var summary = MonthlyTimingRollup.Summarize([incomplete]);
+
+        var month = Assert.Single(summary.Months);
+        Assert.Equal(MonthlyTimingRollup.UnknownMonthKey, month.Month);
+        Assert.Equal(1, month.Totals.RunCount);
     }
 
     private static BuildRun Run(
