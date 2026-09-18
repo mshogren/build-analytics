@@ -5,16 +5,15 @@ using BuildAnalytics.Core.Query;
 namespace BuildAnalytics.App.Cli;
 
 /// <summary>
-/// Pure argument parser for <c>retrieve</c> / <c>report</c> / <c>help</c> (ADR-79..81).
-/// Legacy flags (--config, --pat, --input-root, --count-only, ...) are unknown options and
-/// therefore usage errors. No process-exiting here.
+/// Pure argument parser for <c>retrieve</c> / <c>report</c> / <c>help</c> (ADR-79..81, ADR-98).
+/// Config values are passed in as data; this type performs no IO. Legacy flags are unknown
+/// options and therefore usage errors. No process-exiting here.
 /// </summary>
 public static class CliParser
 {
     public const string DefaultApiVersion = "7.1";
-    public const int DefaultPageSize = 1000;
 
-    public static CliParseResult Parse(string[] args)
+    public static CliParseResult Parse(string[] args, BuildAnalyticsConfig? config = null)
     {
         if (args is null || args.Length == 0)
         {
@@ -31,8 +30,8 @@ public static class CliParser
         {
             return verb switch
             {
-                "retrieve" => ParseRetrieve(args[1..]),
-                "report" => ParseReport(args[1..]),
+                "retrieve" => ParseRetrieve(args[1..], config),
+                "report" => ParseReport(args[1..], config),
                 _ => CliParseResult.UsageError($"Unknown command '{verb}'. Expected 'retrieve', 'report', or 'help'.")
             };
         }
@@ -42,19 +41,14 @@ public static class CliParser
         }
     }
 
-    private static CliParseResult ParseRetrieve(string[] args)
+    private static CliParseResult ParseRetrieve(string[] args, BuildAnalyticsConfig? config)
     {
         string? organization = null;
         string? project = null;
         string? outputRoot = null;
         string? apiVersion = null;
-        DateTimeOffset? minTime = null;
-        DateTimeOffset? maxTime = null;
-        var definitionIds = new List<int>();
-        var definitionGlobs = new List<string>();
-        var detailPolicy = DetailPolicy.ListOnly;
-        var maxRuns = int.MaxValue;
-        var pageSize = DefaultPageSize;
+        var detailPolicy = (DetailPolicy?)null;
+        int? maxRuns = null;
         var quiet = false;
 
         for (var index = 0; index < args.Length; index++)
@@ -86,26 +80,11 @@ public static class CliParser
                 case "--output-root":
                     outputRoot = Value();
                     break;
-                case "--from":
-                    minTime = ParseInstant(name, Value());
-                    break;
-                case "--to":
-                    maxTime = ParseInstant(name, Value());
-                    break;
-                case "--definition-id":
-                    definitionIds.AddRange(ParseIds(Value()));
-                    break;
-                case "--definition":
-                    definitionGlobs.Add(Value());
-                    break;
                 case "--detail":
                     detailPolicy = ParseDetailPolicy(Value());
                     break;
                 case "--max-runs":
                     maxRuns = ParseNonNegative(name, Value());
-                    break;
-                case "--page-size":
-                    pageSize = ParsePositive(name, Value());
                     break;
                 case "--api-version":
                     apiVersion = Value();
@@ -113,31 +92,40 @@ public static class CliParser
                 case "--quiet":
                     quiet = true;
                     break;
+                case "--config":
+                    _ = Value();
+                    break;
                 default:
                     throw new CliUsageException($"Unknown option '{name}'.");
             }
         }
 
-        Require(organization, "--org");
-        Require(project, "--project");
-        Require(outputRoot, "--output-root");
+        // Precedence: CLI -> config -> built-in default (ADR-98).
+        var effectiveOrganization = organization ?? config?.Organization;
+        var effectiveProject = project ?? config?.Project;
+        var effectiveOutputRoot = outputRoot ?? config?.OutputRoot;
+
+        Require(effectiveOrganization, "--org");
+        Require(effectiveProject, "--project");
+        Require(effectiveOutputRoot, "--output-root");
+
+        var effectiveDetail = detailPolicy
+            ?? (config?.Detail is { } configuredDetail ? ParseDetailPolicy(configuredDetail) : DetailPolicy.ListOnly);
+        var effectiveApiVersion = Coalesce(apiVersion, config?.ApiVersion, DefaultApiVersion);
+        var effectiveMaxRuns = maxRuns ?? config?.MaxRuns ?? int.MaxValue;
+        var effectiveQuiet = quiet || (config?.Quiet ?? false);
 
         return CliParseResult.ForRetrieve(new RetrieveOptions(
-            organization!,
-            project!,
-            outputRoot!,
-            minTime,
-            maxTime,
-            definitionIds,
-            definitionGlobs,
-            detailPolicy,
-            maxRuns,
-            pageSize,
-            string.IsNullOrWhiteSpace(apiVersion) ? DefaultApiVersion : apiVersion!,
-            quiet));
+            effectiveOrganization!,
+            effectiveProject!,
+            effectiveOutputRoot!,
+            effectiveDetail,
+            effectiveMaxRuns,
+            effectiveApiVersion,
+            effectiveQuiet));
     }
 
-    private static CliParseResult ParseReport(string[] args)
+    private static CliParseResult ParseReport(string[] args, BuildAnalyticsConfig? config)
     {
         string? outputRoot = null;
         string? outputPath = null;
@@ -172,19 +160,24 @@ public static class CliParser
                 case "--quiet":
                     quiet = true;
                     break;
+                case "--config":
+                    _ = Value();
+                    break;
                 default:
                     throw new CliUsageException($"Unknown option '{name}'.");
             }
         }
 
-        Require(outputRoot, "--output-root");
+        var effectiveOutputRoot = outputRoot ?? config?.OutputRoot;
+        Require(effectiveOutputRoot, "--output-root");
 
-        return CliParseResult.ForReport(new ReportOptions(
-            outputRoot!,
-            string.IsNullOrWhiteSpace(outputPath)
-                ? Path.Combine(outputRoot!, ExcelTimingReportWriter.DefaultFileName)
-                : outputPath!,
-            quiet));
+        var effectiveOutputPath = Coalesce(
+            outputPath,
+            config?.Out,
+            Path.Combine(effectiveOutputRoot!, ExcelTimingReportWriter.DefaultFileName));
+        var effectiveQuiet = quiet || (config?.Quiet ?? false);
+
+        return CliParseResult.ForReport(new ReportOptions(effectiveOutputRoot!, effectiveOutputPath, effectiveQuiet));
     }
 
     private static bool IsHelp(string value)
@@ -206,6 +199,19 @@ public static class CliParser
         }
     }
 
+    private static string Coalesce(params string?[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (!string.IsNullOrWhiteSpace(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return string.Empty;
+    }
+
     private static DetailPolicy ParseDetailPolicy(string value)
         => value.ToLowerInvariant() switch
         {
@@ -214,33 +220,10 @@ public static class CliParser
             _ => throw new CliUsageException($"Invalid --detail value '{value}'. Expected 'list' or 'fill-missing'.")
         };
 
-    private static DateTimeOffset ParseInstant(string flag, string value)
-        => DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
-            ? parsed
-            : throw new CliUsageException($"Invalid {flag} value '{value}'. Expected an ISO-8601 timestamp.");
-
     private static int ParseNonNegative(string flag, string value)
         => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed >= 0
             ? parsed
             : throw new CliUsageException($"Invalid {flag} value '{value}'. Expected a non-negative integer.");
-
-    private static int ParsePositive(string flag, string value)
-        => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed >= 1
-            ? parsed
-            : throw new CliUsageException($"Invalid {flag} value '{value}'. Expected a positive integer.");
-
-    private static IEnumerable<int> ParseIds(string value)
-    {
-        foreach (var part in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            if (!int.TryParse(part, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) || id <= 0)
-            {
-                throw new CliUsageException($"Invalid --definition-id value '{part}'. Expected a positive integer.");
-            }
-
-            yield return id;
-        }
-    }
 
     private sealed class CliUsageException(string message) : Exception(message);
 }

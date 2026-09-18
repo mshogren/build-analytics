@@ -1,3 +1,4 @@
+using BuildAnalytics.App.Retrieval;
 using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Ports;
@@ -90,24 +91,6 @@ internal sealed class FakeBuildSource(EventLog? log = null) : IBuildSource
     private static string Key(string? token) => token ?? StartKey;
 }
 
-internal sealed class FakeDefinitionResolver : IDefinitionResolver
-{
-    public IReadOnlyList<int> Ids { get; set; } = [];
-
-    public Exception? Failure { get; set; }
-
-    public List<(BuildQuery Query, IReadOnlyList<string> Patterns)> Calls { get; } = [];
-
-    public Task<IReadOnlyList<int>> ResolveAsync(BuildQuery query, IReadOnlyList<string> patterns, CancellationToken cancellationToken)
-    {
-        Calls.Add((query, patterns.ToArray()));
-
-        return Failure is not null
-            ? Task.FromException<IReadOnlyList<int>>(Failure)
-            : Task.FromResult(Ids);
-    }
-}
-
 internal sealed class RecordingManifestStore(EventLog? log = null) : IManifestStore
 {
     public Manifest? Current { get; set; }
@@ -197,4 +180,23 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
     public Task<IReadOnlyList<int>> ListRunIdsAsync(CancellationToken cancellationToken)
         => Task.FromResult<IReadOnlyList<int>>(
             _runs.Keys.Concat(ListedButAbsent).Distinct().OrderBy(id => id).ToArray());
+}
+
+/// <summary>Records the ordered progress events the pipeline emits (ADR-96).</summary>
+internal sealed class RecordingRetrievalProgress : IRetrievalProgress
+{
+    public List<string> Events { get; } = [];
+
+    public void Started(int? total) => Events.Add($"started:{total?.ToString() ?? "-"}");
+
+    public void PageFetched(int pageNumber, int runsInPage) => Events.Add($"page:{pageNumber}:{runsInPage}");
+
+    public void PercentComplete(int percent, int completed, int total) => Events.Add($"percent:{percent}:{completed}/{total}");
+
+    public void Restarting() => Events.Add("restarting");
+
+    public void Paused(PauseReason reason, TimeSpan? retryAfter, int? remainingBudget)
+        => Events.Add($"paused:{reason}");
+
+    public void Completed(int pages, int runsWritten) => Events.Add($"completed:{pages}:{runsWritten}");
 }

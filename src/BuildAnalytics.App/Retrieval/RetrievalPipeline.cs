@@ -19,17 +19,19 @@ public sealed record RetrievalResult(
     int? RemainingBudget);
 
 /// <summary>
-/// List -> detail-if-needed -> durable run write -> manifest checkpoint (ADR-4/66..93).
-/// Owns paging, token-cycle detection, and terminal status; the adapter owns the run
-/// budget and HTTP retry.
+/// List -> detail-if-needed -> durable run write -> manifest checkpoint (ADR-4/66..99).
+/// Owns paging, token-cycle detection, refresh early-stop, and terminal status; the adapter
+/// owns the run budget and HTTP retry.
 /// </summary>
 public sealed class RetrievalPipeline(
     IBuildSource source,
-    IDefinitionResolver resolver,
     IRunStore runs,
     IManifestStore manifests,
-    TimeProvider clock)
+    TimeProvider clock,
+    IRetrievalProgress? progress = null)
 {
+    private readonly IRetrievalProgress _progress = progress ?? NullRetrievalProgress.Instance;
+
     public async Task<RetrievalResult> RunAsync(BuildQuery query, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -38,47 +40,58 @@ public sealed class RetrievalPipeline(
         var existing = await manifests.TryReadAsync(cancellationToken).ConfigureAwait(false);
         var isCompleted = existing is { Status: ManifestStatus.Completed };
 
-        // ADR-88: resolve + fingerprint + compatibility happen BEFORE the completed short-circuit,
-        // so a different query on a completed root is a typed error, not a silent no-op.
-        var resolvedIds = await resolver.ResolveAsync(query, query.DefinitionNames, cancellationToken).ConfigureAwait(false);
-        var effective = query with { ResolvedDefinitionIds = resolvedIds };
-        var fingerprint = BuildQueryFingerprint.Compute(effective);
+        // ADR-88/92: the fingerprint is checked BEFORE any list call; a different query on a
+        // (completed or non-empty) root is a typed error, not a silent no-op.
+        var fingerprint = BuildQueryFingerprint.Compute(query);
 
         var existingRunIds = await runs.ListRunIdsAsync(cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
-            // ADR-92: a completed root is query-bound even with an empty runs/.
             ManifestCompatibility.EnsureCompatible(existing, fingerprint, existingRunIds, requireMatch: isCompleted);
         }
 
-        if (isCompleted)
-        {
-            return new RetrievalResult(
-                ManifestStatus.Completed,
-                existing!.Cursor,
-                ShortCircuited: true,
-                PagesFetched: 0,
-                RunsWritten: 0,
-                existing.FailedRunIds,
-                Pause: null,
-                RetryAfter: null,
-                RemainingBudget: null);
-        }
-
         var createdAt = existing?.CreatedAt ?? clock.GetUtcNow();
-        var failedRunIds = new List<int>(existing?.FailedRunIds ?? []);
+
+        // ADR-97: a refresh retries the previously failed runs; a resume keeps them until re-listed.
+        var failedRunIds = isCompleted ? new List<int>() : new List<int>(existing?.FailedRunIds ?? []);
         var existingIdSet = new HashSet<int>(existingRunIds);
         var writtenThisPass = new HashSet<int>();
-        var cursor = existing?.Cursor;
+        var baseline = existingRunIds.Count;
+
+        // ADR-97: a refresh re-lists from cursor=null; a resume continues from the stored cursor.
+        var cursor = isCompleted ? null : existing?.Cursor;
+
+        // ADR-97: only a completed refresh may stop at the first page that adds no new runs.
+        var canEarlyStop = isCompleted;
 
         var pagesFetched = 0;
         var runsWritten = 0;
+        var total = (int?)null;
+        var handled = 0;
+        var emittedBucket = 0;
+
+        void ReportPercent()
+        {
+            if (total is not { } totalCount || totalCount <= 0)
+            {
+                return;
+            }
+
+            var completed = Math.Min(baseline + handled, totalCount);
+            var percent = completed * 100 / totalCount;
+            while (emittedBucket + 5 <= percent)
+            {
+                emittedBucket += 5;
+                _progress.PercentComplete(emittedBucket, completed, totalCount);
+            }
+        }
 
         async Task<RetrievalResult> PauseAsync(PipelinePausedException exception)
         {
             // ADR-62: paused is resumable and never completed; the reason and typed
             // RetryAfter/RemainingBudget are surfaced structurally and in lastError.
             await CommitAsync(ManifestStatus.Paused, cursor, DescribePause(exception)).ConfigureAwait(false);
+            _progress.Paused(exception.Reason, exception.RetryAfter, exception.RemainingBudget);
             return Result(ManifestStatus.Paused, cursor, pagesFetched, runsWritten, failedRunIds, exception.Reason, exception.RetryAfter, exception.RemainingBudget);
         }
 
@@ -93,16 +106,28 @@ public sealed class RetrievalPipeline(
                 clock.GetUtcNow(),
                 lastError,
                 failedRunIds,
-                query.DefinitionIds,
-                query.DefinitionNames);
+                [],
+                []);
 
             await manifests.CommitAsync(manifest, cancellationToken).ConfigureAwait(false);
+        }
+
+        async Task<RetrievalResult> CompleteAsync()
+        {
+            // ADR-67: exhausted or early-stopped with failures is still completed.
+            await CommitAsync(ManifestStatus.Completed, cursor: null, lastError: null).ConfigureAwait(false);
+            _progress.Completed(pagesFetched, runsWritten);
+            var result = Result(ManifestStatus.Completed, cursor: null, pagesFetched, runsWritten, failedRunIds);
+
+            // ADR-97: only a refresh that wrote nothing is marked short-circuited.
+            return result with { ShortCircuited = isCompleted && runsWritten == 0 };
         }
 
         try
         {
             // ADR-68: a fingerprinted, resumable root exists before the first list call.
             await CommitAsync(ManifestStatus.InProgress, cursor, lastError: null).ConfigureAwait(false);
+            _progress.Started(total);
 
             var restarted = false;
             var seenTokens = new HashSet<string>(StringComparer.Ordinal);
@@ -114,7 +139,7 @@ public sealed class RetrievalPipeline(
                 BuildPage page;
                 try
                 {
-                    page = await source.ListAsync(effective, cursor, cancellationToken).ConfigureAwait(false);
+                    page = await source.ListAsync(query, cursor, cancellationToken).ConfigureAwait(false);
                 }
                 catch (InvalidContinuationTokenException exception)
                 {
@@ -127,11 +152,17 @@ public sealed class RetrievalPipeline(
                     restarted = true;
                     seenTokens.Clear();
                     cursor = null;
+                    _progress.Restarting();
                     await CommitAsync(ManifestStatus.InProgress, cursor: null, lastError: null).ConfigureAwait(false);
                     continue;
                 }
 
                 pagesFetched++;
+                total ??= page.TotalCount;
+                _progress.PageFetched(pagesFetched, page.Runs.Count);
+
+                var runsBeforePage = runsWritten;
+                var failuresBeforePage = failedRunIds.Count;
 
                 foreach (var listed in page.Runs)
                 {
@@ -148,18 +179,18 @@ public sealed class RetrievalPipeline(
                     if (existingIdSet.Contains(listed.Id))
                     {
                         var onDisk = await TryReadExistingRunAsync(listed.Id, cancellationToken).ConfigureAwait(false);
-                        if (onDisk is not null && !DetailPolicyEvaluator.NeedsDetail(onDisk, effective.DetailPolicy))
+                        if (onDisk is not null && !DetailPolicyEvaluator.NeedsDetail(onDisk, query.DetailPolicy))
                         {
                             continue;
                         }
                     }
 
                     var run = listed;
-                    if (DetailPolicyEvaluator.NeedsDetail(run, effective.DetailPolicy))
+                    if (DetailPolicyEvaluator.NeedsDetail(run, query.DetailPolicy))
                     {
                         try
                         {
-                            run = await source.GetDetailAsync(effective, run.Id, cancellationToken).ConfigureAwait(false);
+                            run = await source.GetDetailAsync(query, run.Id, cancellationToken).ConfigureAwait(false);
                         }
                         catch (RunNotFoundException)
                         {
@@ -169,13 +200,26 @@ public sealed class RetrievalPipeline(
                                 failedRunIds.Add(run.Id);
                             }
 
+                            handled++;
                             continue;
                         }
                     }
 
                     await runs.WriteAsync(run, cancellationToken).ConfigureAwait(false);
                     runsWritten++;
+                    handled++;
                     writtenThisPass.Add(run.Id);
+                }
+
+                ReportPercent();
+
+                // ADR-97: with a descending list, a page that adds no new runs means every older
+                // page is already stored -> stop paging. Only a completed-root refresh may stop.
+                var pageAddedNewRuns = runsWritten > runsBeforePage;
+                var pageRecordedFailures = failedRunIds.Count > failuresBeforePage;
+                if (canEarlyStop && page.Runs.Count > 0 && !pageAddedNewRuns && !pageRecordedFailures)
+                {
+                    return await CompleteAsync().ConfigureAwait(false);
                 }
 
                 var next = page.ContinuationToken;
@@ -191,15 +235,14 @@ public sealed class RetrievalPipeline(
                     restarted = true;
                     seenTokens.Clear();
                     cursor = null;
+                    _progress.Restarting();
                     await CommitAsync(ManifestStatus.InProgress, cursor: null, lastError: null).ConfigureAwait(false);
                     continue;
                 }
 
                 if (next is null)
                 {
-                    // ADR-67: exhausted token with failures is still completed.
-                    await CommitAsync(ManifestStatus.Completed, cursor: null, lastError: null).ConfigureAwait(false);
-                    return Result(ManifestStatus.Completed, cursor: null, pagesFetched, runsWritten, failedRunIds);
+                    return await CompleteAsync().ConfigureAwait(false);
                 }
 
                 cursor = next;

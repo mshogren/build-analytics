@@ -209,6 +209,57 @@ public sealed class CliApplicationTests
         Assert.Contains("retrieve", string.Join("\n", console.Stdout), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Retrieve_writes_progress_to_stderr_and_quiet_suppresses_it()
+    {
+        using var root = new TempOutputRoot();
+        using var quietRoot = new TempOutputRoot();
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueJson("""{ "count": 0, "value": [] }""");
+        var console = new CapturingConsole();
+        var app = new CliApplication(new FakeCredentialProvider("secret"), console, new CountingHandlerFactory(() => handler), delay: new FakeDelayScheduler());
+
+        var code = await app.RunAsync(
+            ["retrieve", "--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
+            CancellationToken.None);
+
+        Assert.Equal(0, code);
+        var stderr = string.Join("\n", console.Stderr);
+        Assert.Contains("Retrieving", stderr, StringComparison.Ordinal);
+        Assert.Contains("page 1", stderr, StringComparison.Ordinal);
+        Assert.Empty(console.Stdout);
+
+        var quietHandler = new ScriptedHttpMessageHandler();
+        quietHandler.EnqueueJson("""{ "count": 0, "value": [] }""");
+        var quietConsole = new CapturingConsole();
+        var quietApp = new CliApplication(new FakeCredentialProvider("secret"), quietConsole, new CountingHandlerFactory(() => quietHandler), delay: new FakeDelayScheduler());
+
+        var quietCode = await quietApp.RunAsync(
+            ["retrieve", "--org", "https://dev.azure.com/org", "--project", "p", "--output-root", quietRoot.Path, "--quiet"],
+            CancellationToken.None);
+
+        Assert.Equal(0, quietCode);
+        Assert.Empty(quietConsole.Stderr);
+    }
+
+    [Fact]
+    public async Task Retrieve_can_take_its_required_values_from_config()
+    {
+        using var root = new TempOutputRoot();
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueJson("""{ "count": 0, "value": [] }""");
+        var console = new CapturingConsole();
+        var app = new CliApplication(new FakeCredentialProvider("secret"), console, new CountingHandlerFactory(() => handler), delay: new FakeDelayScheduler());
+        var config = new BuildAnalyticsConfig(Organization: "https://dev.azure.com/org", Project: "p", OutputRoot: root.Path);
+
+        var code = await app.RunAsync(["retrieve"], config, CancellationToken.None);
+
+        Assert.Equal(0, code);
+        using var reader = FileManifestStore.OpenReadOnly(root.Path);
+        var manifest = await reader.TryReadAsync(CancellationToken.None);
+        Assert.Equal(ManifestStatus.Completed, manifest!.Status);
+    }
+
     private static async Task WriteCompletedRootAsync(string root)
     {
         var manifest = new Manifest(

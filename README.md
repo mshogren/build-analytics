@@ -37,18 +37,22 @@ Options:
 | `--org <url>` | yes | Organization URL, e.g. `https://dev.azure.com/acme` |
 | `--project <name>` | yes | Project name (case-sensitive) |
 | `--output-root <path>` | yes | Created if absent; reuse it to resume |
-| `--from <iso>` / `--to <iso>` | no | ISO-8601 bounds on queue time |
-| `--definition-id <id>` | no | Repeatable; also accepts comma-separated ids |
-| `--definition <glob>` | no | Repeatable; `*`/`?` wildcard matched against definition **name or path** |
 | `--detail list\|fill-missing` | no | Default `list`. `fill-missing` fetches per-run detail only when a list row is missing required fields |
 | `--max-runs <n>` | no | Retrieval budget. `0` pauses immediately; omit for unlimited |
-| `--page-size <n>` | no | Default `1000` |
 | `--api-version <v>` | no | Default `7.1` (part of the retrieval's identity) |
 | `--quiet` | no | Suppress progress output |
+| `--config <path>` | no | Config file to load (see below) |
 
-**Resuming:** if a run stops (Ctrl+C, a throttle, a failure), just run the same
-command again. Progress is checkpointed per page in `manifest.json`, and
-already-stored runs are not re-fetched.
+**Resuming and refreshing:** re-running the same command picks up builds that
+appeared since the last run. A run that stops (Ctrl+C, a throttle, a failure) is
+checkpointed per page in `manifest.json`; a completed root is re-listed from the
+top, already-stored runs are not re-fetched, and paging stops as soon as a page
+adds no new runs. A no-new-builds run costs a single list call.
+
+**Progress:** retrieval writes coarse progress to stderr — a start line, one
+line per page, and a percentage every 5%. The percentage counts runs already on
+disk at the start of the pass, so a resume or refresh continues rather than
+restarting at 0. `--quiet` suppresses it.
 
 ## Report
 
@@ -68,6 +72,30 @@ The workbook has two sheets:
 
 All durations are seconds. Blank cells mean "not available" (not zero).
 
+## Configuration file
+
+Any of the settings above can also come from an optional JSON file. The tool
+reads `build-analytics.config.json` from the working directory, or a path given
+with `--config <path>` for either verb. A missing default file is fine; a missing
+file named via `--config` is a usage error (exit `2`).
+
+```json
+{
+  "org": "https://dev.azure.com/acme",
+  "project": "my-project",
+  "outputRoot": "./analytics",
+  "apiVersion": "7.1",
+  "detail": "fill-missing",
+  "maxRuns": 1000,
+  "quiet": false,
+  "out": "./analytics/timing-report.xlsx"
+}
+```
+
+Precedence is **CLI → config file → built-in default**. Unknown keys are ignored.
+There is deliberately **no environment tier** and **no `pat` key**: a `pat` key is
+a hard usage error naming `AZDO_PAT`.
+
 ## Files on disk
 
 ```
@@ -78,16 +106,16 @@ All durations are seconds. Blank cells mean "not available" (not zero).
   timing-report.xlsx            # report output (default location)
 ```
 
-A retrieval is bound to the query that created it (`org`, `project`, time range,
-resolved definition ids, detail policy, API version). Pointing a **different**
-query at the same output root is an error — use a new root.
+A retrieval is bound to the query that created it (`org`, `project`, detail
+policy, API version). Pointing a **different** query at the same output root is
+an error — use a new root.
 
 ## Credentials
 
 `AZDO_PAT` is read from the environment. There is deliberately:
 
 - **no `--pat` flag** (it would leak into shell history and process listings)
-- **no config file** and no `--config`
+- **no `pat` key in the config file** (it is a hard error)
 - **no PAT stored on disk** — it never appears in `manifest.json`, `run.json`,
   the workbook, logs, or error messages
 

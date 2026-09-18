@@ -15,13 +15,8 @@ public sealed record RetrieveOptions(
     string Organization,
     string Project,
     string OutputRoot,
-    DateTimeOffset? MinTime,
-    DateTimeOffset? MaxTime,
-    IReadOnlyList<int> DefinitionIds,
-    IReadOnlyList<string> DefinitionGlobs,
     DetailPolicy DetailPolicy,
     int MaxRuns,
-    int PageSize,
     string ApiVersion,
     bool Quiet);
 
@@ -29,7 +24,7 @@ public sealed record RetrieveOptions(
 public sealed record ReportOptions(string OutputRoot, string OutputPath, bool Quiet);
 
 /// <summary>
-/// Pure parse result. <see cref="Parse"/> never exits the process; only Main maps this to a code.
+/// Pure parse result. <see cref="CliParser.Parse"/> never exits the process; only Main maps this to a code.
 /// </summary>
 public sealed record CliParseResult(CliVerb Verb, RetrieveOptions? Retrieve, ReportOptions? Report, string? Error)
 {

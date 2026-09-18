@@ -43,12 +43,8 @@ public sealed class CliParserTests
         var options = result.Retrieve!;
         Assert.Equal(DetailPolicy.ListOnly, options.DetailPolicy);
         Assert.Equal("7.1", options.ApiVersion);
-        Assert.Equal(1000, options.PageSize);
         Assert.Equal(int.MaxValue, options.MaxRuns);
         Assert.False(options.Quiet);
-        Assert.Null(options.MinTime);
-        Assert.Empty(options.DefinitionIds);
-        Assert.Empty(options.DefinitionGlobs);
     }
 
     [Fact]
@@ -60,26 +56,15 @@ public sealed class CliParserTests
             "--org", "https://dev.azure.com/org",
             "--project", "p",
             "--output-root", "root",
-            "--from", "2024-01-01T00:00:00Z",
-            "--to", "2024-02-01T00:00:00Z",
-            "--definition-id", "1,2",
-            "--definition-id", "3",
-            "--definition", "ci-*",
             "--detail", "fill-missing",
             "--max-runs", "50",
-            "--page-size", "200",
             "--api-version", "6.0",
             "--quiet"
         ]);
 
         var options = result.Retrieve!;
-        Assert.Equal(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), options.MinTime);
-        Assert.Equal(new DateTimeOffset(2024, 2, 1, 0, 0, 0, TimeSpan.Zero), options.MaxTime);
-        Assert.Equal([1, 2, 3], options.DefinitionIds);
-        Assert.Equal(["ci-*"], options.DefinitionGlobs);
         Assert.Equal(DetailPolicy.FillMissing, options.DetailPolicy);
         Assert.Equal(50, options.MaxRuns);
-        Assert.Equal(200, options.PageSize);
         Assert.Equal("6.0", options.ApiVersion);
         Assert.True(options.Quiet);
     }
@@ -87,9 +72,6 @@ public sealed class CliParserTests
     [Theory]
     [InlineData("--detail", "bogus")]
     [InlineData("--max-runs", "-1")]
-    [InlineData("--page-size", "0")]
-    [InlineData("--from", "not-a-date")]
-    [InlineData("--definition-id", "0")]
     [InlineData("--max-runs", "abc")]
     public void Retrieve_rejects_invalid_values(string flag, string value)
     {
@@ -99,7 +81,11 @@ public sealed class CliParserTests
     }
 
     [Theory]
-    [InlineData("--config")]
+    [InlineData("--from")]
+    [InlineData("--to")]
+    [InlineData("--page-size")]
+    [InlineData("--definition-id")]
+    [InlineData("--definition")]
     [InlineData("--pat")]
     [InlineData("--input-root")]
     [InlineData("--output")]
@@ -108,7 +94,7 @@ public sealed class CliParserTests
     [InlineData("--max-queue-wait")]
     [InlineData("--count-only")]
     [InlineData("--throttle-limit")]
-    public void Legacy_flags_are_usage_errors(string legacyFlag)
+    public void Removed_and_legacy_flags_are_usage_errors(string legacyFlag)
     {
         Assert.True(CliParser.Parse(["retrieve", "--org", "o", "--project", "p", "--output-root", "r", legacyFlag, "x"]).IsError);
     }
@@ -122,6 +108,61 @@ public sealed class CliParserTests
         Assert.Equal("https://dev.azure.com/org", result.Retrieve!.Organization);
         Assert.Equal("p", result.Retrieve.Project);
         Assert.Equal("root", result.Retrieve.OutputRoot);
+    }
+
+    [Fact]
+    public void Config_supplies_retrieve_defaults_and_cli_overrides_them()
+    {
+        var config = new BuildAnalyticsConfig(
+            Organization: "https://dev.azure.com/config",
+            Project: "config-project",
+            OutputRoot: "config-root",
+            ApiVersion: "6.0",
+            Detail: "fill-missing",
+            MaxRuns: 10,
+            Quiet: true);
+
+        var fromConfig = CliParser.Parse(["retrieve"], config).Retrieve!;
+        Assert.Equal("https://dev.azure.com/config", fromConfig.Organization);
+        Assert.Equal("config-project", fromConfig.Project);
+        Assert.Equal("config-root", fromConfig.OutputRoot);
+        Assert.Equal("6.0", fromConfig.ApiVersion);
+        Assert.Equal(DetailPolicy.FillMissing, fromConfig.DetailPolicy);
+        Assert.Equal(10, fromConfig.MaxRuns);
+        Assert.True(fromConfig.Quiet);
+
+        var overridden = CliParser.Parse(
+            ["retrieve", "--org", "https://dev.azure.com/cli", "--max-runs", "3", "--detail", "list"],
+            config).Retrieve!;
+        Assert.Equal("https://dev.azure.com/cli", overridden.Organization);
+        Assert.Equal(3, overridden.MaxRuns);
+        Assert.Equal(DetailPolicy.ListOnly, overridden.DetailPolicy);
+    }
+
+    [Fact]
+    public void Config_can_satisfy_required_retrieve_options()
+    {
+        var config = new BuildAnalyticsConfig(Organization: "o", Project: "p", OutputRoot: "r");
+
+        Assert.False(CliParser.Parse(["retrieve"], config).IsError);
+    }
+
+    [Fact]
+    public void Invalid_config_detail_is_a_usage_error()
+    {
+        var config = new BuildAnalyticsConfig(Organization: "o", Project: "p", OutputRoot: "r", Detail: "nonsense");
+
+        Assert.True(CliParser.Parse(["retrieve"], config).IsError);
+    }
+
+    [Fact]
+    public void Parse_accepts_config_and_does_no_io()
+    {
+        // The file does not exist; the pure parser must not touch the filesystem.
+        var result = CliParser.Parse(
+            ["retrieve", "--org", "o", "--project", "p", "--output-root", "r", "--config", "missing-does-not-exist.json"]);
+
+        Assert.False(result.IsError);
     }
 
     [Fact]
@@ -141,6 +182,18 @@ public sealed class CliParserTests
 
         Assert.Equal("custom.xlsx", result.Report!.OutputPath);
         Assert.True(result.Report.Quiet);
+    }
+
+    [Fact]
+    public void Report_reads_output_root_and_out_from_config()
+    {
+        var config = new BuildAnalyticsConfig(OutputRoot: "config-root", Out: "config.xlsx", Quiet: true);
+
+        var result = CliParser.Parse(["report"], config).Report!;
+
+        Assert.Equal("config-root", result.OutputRoot);
+        Assert.Equal("config.xlsx", result.OutputPath);
+        Assert.True(result.Quiet);
     }
 
     [Fact]

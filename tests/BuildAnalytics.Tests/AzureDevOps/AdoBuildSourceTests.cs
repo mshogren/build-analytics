@@ -31,6 +31,7 @@ public sealed class AdoBuildSourceTests
         var page = await source.ListAsync(Query(), continuationToken: null, default);
 
         Assert.Equal(2, page.Runs.Count);
+        Assert.Equal(2, page.TotalCount);
         Assert.Equal("page-2", page.ContinuationToken);
         Assert.All(page.Runs, run =>
         {
@@ -70,7 +71,7 @@ public sealed class AdoBuildSourceTests
     [Fact]
     public async Task MaxRuns_trims_top_to_the_remaining_budget()
     {
-        var (source, handler, _, _) = Create(options: new AdoBuildSourceOptions { PageSize = 1000, MaxRuns = 3 });
+        var (source, handler, _, _) = Create(options: new AdoBuildSourceOptions { MaxRuns = 3 });
         handler.EnqueueJson("""{ "value": [ { "id": 1 } ] }""", continuationToken: "next");
 
         await source.ListAsync(Query(), null, default);
@@ -157,50 +158,6 @@ public sealed class AdoBuildSourceTests
     }
 
     [Fact]
-    public async Task Resolve_pages_all_definitions_and_matches_by_name_or_path()
-    {
-        var (source, handler, _, _) = Create();
-        handler.EnqueueJson(
-            """{ "count": 2, "value": [ { "id": 5, "name": "ci-main", "path": "\\CI" }, { "id": 6, "name": "release", "path": "\\Rel" } ] }""",
-            continuationToken: "defs-2");
-        handler.EnqueueJson(
-            """{ "count": 1, "value": [ { "id": 7, "name": "ci-nightly", "path": "\\CI" } ] }""");
-
-        var resolved = await source.ResolveAsync(Query(definitionNames: ["ci-*", "\\Rel"]), ["ci-*", "\\Rel"], default);
-
-        Assert.Equal([5, 6, 7], resolved);
-        Assert.Equal(2, handler.RequestCount);
-        Assert.Contains("continuationToken=defs-2", handler.RequestUris[1].Query, StringComparison.Ordinal);
-        Assert.DoesNotContain("name=", handler.RequestUris[0].Query, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Resolve_unions_explicit_ids_and_dedupes_sorted()
-    {
-        var (source, handler, _, _) = Create();
-        handler.EnqueueJson(
-            """{ "value": [ { "id": 5, "name": "ci-main", "path": "\\CI" }, { "id": 9, "name": "other", "path": "\\X" } ] }""");
-
-        var query = Query(definitionNames: ["ci-*"]) with { DefinitionIds = [9, 3, 3, -1] };
-        var resolved = await source.ResolveAsync(query, ["ci-*"], default);
-
-        Assert.Equal([3, 5, 9], resolved);
-        Assert.Equal(1, handler.RequestCount);
-    }
-
-    [Fact]
-    public async Task Resolve_without_names_needs_no_network()
-    {
-        var (source, handler, _, _) = Create();
-
-        var query = Query() with { DefinitionIds = [4, 2, 4] };
-        var resolved = await source.ResolveAsync(query, [], default);
-
-        Assert.Equal([2, 4], resolved);
-        Assert.Equal(0, handler.RequestCount);
-    }
-
-    [Fact]
     public async Task Malformed_list_body_is_wrapped_as_AdoRequestException()
     {
         var (source, handler, _, _) = Create();
@@ -222,29 +179,12 @@ public sealed class AdoBuildSourceTests
         Assert.Equal(6, exception.ReturnedRunId);
     }
 
-    [Fact]
-    public async Task Resolve_rejects_a_definition_token_cycle()
-    {
-        var (source, handler, _, _) = Create();
-        handler.EnqueueJson("""{ "value": [ { "id": 5, "name": "ci", "path": "\\CI" } ] }""", continuationToken: "t1");
-        handler.EnqueueJson("""{ "value": [ { "id": 6, "name": "other", "path": "\\X" } ] }""", continuationToken: "t1");
-
-        await Assert.ThrowsAsync<InvalidContinuationTokenException>(
-            () => source.ResolveAsync(Query(definitionNames: ["ci-*"]), ["ci-*"], default));
-    }
-
-    private static BuildQuery Query(IReadOnlyList<string>? definitionNames = null)
+    private static BuildQuery Query()
         => new(
             "https://dev.azure.com/org",
             "project",
-            null,
-            null,
-            [],
             DetailPolicy.FillMissing,
-            "7.1")
-        {
-            DefinitionNames = definitionNames ?? []
-        };
+            "7.1");
 
     private static (AdoBuildSource Source, ScriptedHttpMessageHandler Handler, FakeDelayScheduler Delays, FakeTimeProvider Clock) Create(
         AdoBuildSourceOptions? options = null)

@@ -32,5 +32,8 @@ public sealed record BuildRun(
     public const int CurrentSchemaVersion = 1;
 }
 
-/// <summary>One page of build-list results plus the continuation token for the next page.</summary>
-public sealed record BuildPage(IReadOnlyList<BuildRun> Runs, string? ContinuationToken);
+/// <summary>
+/// One page of build-list results plus the continuation token for the next page.
+/// <see cref="TotalCount"/> mirrors the ADO <c>count</c> field (total matching the query) when present.
+/// </summary>
+public sealed record BuildPage(IReadOnlyList<BuildRun> Runs, string? ContinuationToken, int? TotalCount = null);

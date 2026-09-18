@@ -10,18 +10,17 @@ using BuildAnalytics.Core.Query;
 namespace BuildAnalytics.App.Cli;
 
 /// <summary>
-/// Composition root + runner for the CLI (ADR-79..82). Parsing is pure; this maps the parse
-/// result to an exit code and wires the adapters. Retrieval composes network adapters; reporting
-/// composes read-only stores only (no HttpClient / IBuildSource).
+/// Composition root + runner for the CLI (ADR-79..82, ADR-96..99). Parsing is pure; this maps the
+/// parse result to an exit code and wires the adapters. Retrieval composes network adapters;
+/// reporting composes read-only stores only (no HttpClient / IBuildSource).
 /// </summary>
 public sealed class CliApplication
 {
     public const string Usage =
         """
         build-analytics retrieve --org <url> --project <name> --output-root <path>
-            [--from <iso>] [--to <iso>] [--definition-id <id>]... [--definition <glob>]...
-            [--detail list|fill-missing] [--max-runs <n>] [--page-size <n>] [--api-version <v>] [--quiet]
-        build-analytics report --output-root <path> [--out <file.xlsx>] [--quiet]
+            [--detail list|fill-missing] [--max-runs <n>] [--api-version <v>] [--quiet] [--config <path>]
+        build-analytics report --output-root <path> [--out <file.xlsx>] [--quiet] [--config <path>]
         build-analytics help
         """;
 
@@ -49,9 +48,12 @@ public sealed class CliApplication
         _delay = delay ?? new SystemDelayScheduler();
     }
 
-    public async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
+    public Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
+        => RunAsync(args, config: null, cancellationToken);
+
+    public async Task<int> RunAsync(string[] args, BuildAnalyticsConfig? config, CancellationToken cancellationToken)
     {
-        var parsed = CliParser.Parse(args);
+        var parsed = CliParser.Parse(args, config);
 
         if (parsed.IsError)
         {
@@ -88,26 +90,19 @@ public sealed class CliApplication
 
         using var source = new AdoBuildSource(authHandler, _clock, _delay, new AdoBuildSourceOptions
         {
-            PageSize = options.PageSize,
             MaxRuns = options.MaxRuns
         });
 
         var runStore = new FileRunStore(options.OutputRoot, new PhysicalFileOperations());
         using var manifests = new FileManifestStore(options.OutputRoot, new PhysicalFileOperations());
-        var pipeline = new RetrievalPipeline(source, source, runStore, manifests, _clock);
+        IRetrievalProgress progress = options.Quiet ? NullRetrievalProgress.Instance : new ConsoleRetrievalProgress(_console);
+        var pipeline = new RetrievalPipeline(source, runStore, manifests, _clock, progress);
 
         var query = new BuildQuery(
             options.Organization,
             options.Project,
-            options.MinTime,
-            options.MaxTime,
-            [],
             options.DetailPolicy,
-            options.ApiVersion)
-        {
-            DefinitionIds = options.DefinitionIds,
-            DefinitionNames = options.DefinitionGlobs
-        };
+            options.ApiVersion);
 
         try
         {
@@ -115,11 +110,6 @@ public sealed class CliApplication
 
             if (result.Status == ManifestStatus.Completed)
             {
-                if (!options.Quiet)
-                {
-                    _console.WriteError($"Retrieval completed: {result.RunsWritten} run(s), {result.PagesFetched} page(s).");
-                }
-
                 return 0;
             }
 

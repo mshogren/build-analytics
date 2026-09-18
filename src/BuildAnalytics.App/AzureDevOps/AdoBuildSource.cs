@@ -9,12 +9,15 @@ using BuildAnalytics.Core.Query;
 namespace BuildAnalytics.App.AzureDevOps;
 
 /// <summary>
-/// Azure DevOps build source: one paged build-list GET per call (ADR-55), opt-in detail
-/// fallback, and client-side definition-name resolution. Holds the per-session run budget;
-/// the pipeline owns paging, repeated-token detection, and restart.
+/// Azure DevOps build source: one paged build-list GET per call (ADR-55) and an opt-in detail
+/// fallback. Holds the per-session run budget; the pipeline owns paging, repeated-token
+/// detection, and restart.
 /// </summary>
-public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposable
+public sealed class AdoBuildSource : IBuildSource, IDisposable
 {
+    /// <summary>Fixed <c>$top</c> for a full page (ADR-99).</summary>
+    internal const int PageSize = 1000;
+
     private readonly HttpClient _httpClient;
     private readonly AdoRequestExecutor _executor;
     private readonly AdoBuildSourceOptions _options;
@@ -50,7 +53,7 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposa
         }
 
         var remaining = _options.MaxRuns - _fetched;
-        var top = AdoPageBudget.TrimTop(_options.PageSize, remaining)
+        var top = AdoPageBudget.TrimTop(PageSize, remaining)
             ?? throw new PipelinePausedException(PauseReason.RunCapReached, remainingBudget: remaining);
 
         var path = AdoUrlBuilder.ListPath(query.Project);
@@ -74,7 +77,15 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposa
         }
 
         _fetched += runs.Count;
-        return new BuildPage(runs, response.ContinuationToken);
+
+        // ADR-96: the ADO `count` field is the total matching the query; it drives progress.
+        var totalCount = AdoJsonMapper.GetInt(document.RootElement, "count");
+        if (totalCount is < 0)
+        {
+            totalCount = null;
+        }
+
+        return new BuildPage(runs, response.ContinuationToken, totalCount);
     }
 
     public async Task<BuildRun> GetDetailAsync(BuildQuery query, int runId, CancellationToken cancellationToken)
@@ -103,77 +114,6 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposa
         }
 
         return run;
-    }
-
-    public async Task<IReadOnlyList<int>> ResolveAsync(
-        BuildQuery query,
-        IReadOnlyList<string> patterns,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(query);
-        ArgumentNullException.ThrowIfNull(patterns);
-
-        var resolved = new HashSet<int>((query.DefinitionIds ?? []).Where(id => id > 0));
-        var effectivePatterns = patterns.Where(pattern => !string.IsNullOrEmpty(pattern)).ToArray();
-
-        if (effectivePatterns.Length == 0)
-        {
-            return Sorted(resolved);
-        }
-
-        var definitions = new List<(int Id, string? Name, string? Path)>();
-        var seenTokens = new HashSet<string>(StringComparer.Ordinal);
-        string? continuationToken = null;
-
-        do
-        {
-            var path = AdoUrlBuilder.DefinitionsPath(query.Project);
-            var uri = AdoUrlBuilder.DefinitionsUri(query, _options.PageSize, continuationToken);
-
-            var response = await _executor
-                .SendAsync(() => CreateRequest(uri), path, AdoRequestKind.List, runId: null, continuationToken, cancellationToken)
-                .ConfigureAwait(false);
-
-            using var document = ParseBody(response.Body, path);
-            foreach (var item in AdoJsonMapper.ExtractItems(document.RootElement))
-            {
-                var id = AdoJsonMapper.GetInt(item, "id");
-                if (id is > 0)
-                {
-                    definitions.Add((id.Value, AdoJsonMapper.GetString(item, "name"), AdoJsonMapper.GetString(item, "path")));
-                }
-            }
-
-            // ADR-85: any revisited token (including a >1 page cycle) is a token failure.
-            var next = response.ContinuationToken;
-            if (next is not null && !seenTokens.Add(next))
-            {
-                throw new InvalidContinuationTokenException(next);
-            }
-
-            continuationToken = next;
-        }
-        while (continuationToken is not null);
-
-        var regexes = effectivePatterns.Select(AdoWildcard.ToRegex).ToArray();
-        foreach (var definition in definitions)
-        {
-            if (regexes.Any(regex =>
-                    (definition.Name is not null && regex.IsMatch(definition.Name))
-                    || (definition.Path is not null && regex.IsMatch(definition.Path))))
-            {
-                resolved.Add(definition.Id);
-            }
-        }
-
-        return Sorted(resolved);
-    }
-
-    private static IReadOnlyList<int> Sorted(HashSet<int> ids)
-    {
-        var sorted = ids.ToArray();
-        Array.Sort(sorted);
-        return sorted;
     }
 
     private static JsonDocument ParseBody(string body, string requestPath)

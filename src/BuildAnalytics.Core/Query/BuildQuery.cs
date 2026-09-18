@@ -7,20 +7,9 @@ public enum DetailPolicy
     FillMissing
 }
 
-/// <summary>
-/// The effective query. Raw <see cref="DefinitionIds"/>/<see cref="DefinitionNames"/> are
-/// informational only; identity is <see cref="ResolvedDefinitionIds"/>.
-/// </summary>
+/// <summary>The effective query. Identity is org/project/detailPolicy/apiVersion (ADR-99).</summary>
 public sealed record BuildQuery(
     string Organization,
     string Project,
-    DateTimeOffset? MinTime,
-    DateTimeOffset? MaxTime,
-    IReadOnlyList<int> ResolvedDefinitionIds,
     DetailPolicy DetailPolicy,
-    string ApiVersion)
-{
-    public IReadOnlyList<int> DefinitionIds { get; init; } = [];
-
-    public IReadOnlyList<string> DefinitionNames { get; init; } = [];
-}
+    string ApiVersion);

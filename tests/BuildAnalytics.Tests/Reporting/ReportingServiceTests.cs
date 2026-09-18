@@ -206,7 +206,7 @@ public sealed class ReportingServiceTests
             .ToArray();
 
         Assert.DoesNotContain(parameters, type => typeof(HttpClient).IsAssignableFrom(type));
-        Assert.DoesNotContain(parameters, type => type == typeof(IBuildSource) || type == typeof(IDefinitionResolver));
+        Assert.DoesNotContain(parameters, type => type == typeof(IBuildSource));
     }
 
     private static BuildRun Run(int id, string result)
