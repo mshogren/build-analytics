@@ -62,12 +62,17 @@ public sealed class ExcelTimingReportWriterTests
     [Fact]
     public void Null_averages_render_as_blank_cells()
     {
-        using var workbook = Open(SampleSummary());
-        var sheet = workbook.Worksheet("Monthly");
+        var bytes = ExcelTimingReportWriter.BuildWorkbook(NullAverageSummary());
+        using var workbook = new XLWorkbook(new MemoryStream(bytes));
+        var overview = workbook.Worksheet("Overview");
+        var monthly = workbook.Worksheet("Monthly");
 
-        Assert.True(sheet.Cell(3, 9).IsEmpty());
-        Assert.True(sheet.Cell(3, 10).IsEmpty());
-        Assert.True(sheet.Cell(3, 11).IsEmpty());
+        Assert.True(overview.Cell(9, 2).IsEmpty());
+        Assert.True(overview.Cell(10, 2).IsEmpty());
+        Assert.True(overview.Cell(11, 2).IsEmpty());
+        Assert.True(monthly.Cell(2, 9).IsEmpty());
+        Assert.True(monthly.Cell(2, 10).IsEmpty());
+        Assert.True(monthly.Cell(2, 11).IsEmpty());
     }
 
     [Fact]
@@ -103,6 +108,42 @@ public sealed class ExcelTimingReportWriterTests
     }
 
     [Fact]
+    public void Raw_bytes_and_all_document_properties_contain_no_paths_or_pat()
+    {
+        var bytes = ExcelTimingReportWriter.BuildWorkbook(SampleSummary());
+        var raw = System.Text.Encoding.Latin1.GetString(bytes);
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        Assert.DoesNotContain("/home", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("AZDO_PAT", raw, StringComparison.Ordinal);
+        if (profile.Length > 0)
+        {
+            Assert.DoesNotContain(profile, raw, StringComparison.Ordinal);
+        }
+
+        using var workbook = new XLWorkbook(new MemoryStream(bytes));
+        var properties = workbook.Properties;
+        foreach (var value in new[]
+                 {
+                     properties.Title,
+                     properties.Subject,
+                     properties.Comments,
+                     properties.Keywords,
+                     properties.Author,
+                     properties.LastModifiedBy
+                 })
+        {
+            var text = value ?? string.Empty;
+            Assert.DoesNotContain("/home", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("AZDO_PAT", text, StringComparison.Ordinal);
+            if (profile.Length > 0)
+            {
+                Assert.DoesNotContain(profile, text, StringComparison.Ordinal);
+            }
+        }
+    }
+
+    [Fact]
     public void Workbook_does_not_leak_paths_or_pat()
     {
         using var workbook = Open(SampleSummary());
@@ -133,4 +174,9 @@ public sealed class ExcelTimingReportWriterTests
                 new MonthlyTimingSummary("2024-01", new TimingTotals(6, 4, 1, 1, 0, 0, 2, 10.0, 30.0, 60.0)),
                 new MonthlyTimingSummary("(unknown)", new TimingTotals(4, 2, 1, 0, 1, 0, 1, null, null, null))
             ]);
+
+    private static TimingSummary NullAverageSummary()
+        => new(
+            new TimingTotals(3, 1, 1, 0, 0, 0, 0, null, null, null),
+            [new MonthlyTimingSummary("2024-02", new TimingTotals(3, 1, 1, 0, 0, 0, 0, null, null, null))]);
 }

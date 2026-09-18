@@ -1,9 +1,13 @@
 using BuildAnalytics.App.Reporting;
+using BuildAnalytics.App.Storage;
+using BuildAnalytics.Core;
 using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Ports;
 using BuildAnalytics.Tests.Doubles;
 using BuildAnalytics.Tests.Retrieval;
+using BuildAnalytics.Tests.Storage;
+using System.Text.Json;
 
 namespace BuildAnalytics.Tests.Reporting;
 
@@ -111,6 +115,52 @@ public sealed class ReportingServiceTests
         Assert.Equal(1, result.RunsRead);
         Assert.Equal(0, result.CorruptSkipped);
         Assert.Equal(1, result.Summary.Overall.RunCount);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_does_not_mutate_the_output_root()
+    {
+        using var root = new TempOutputRoot();
+
+        await File.WriteAllBytesAsync(
+            Path.Combine(root.Path, "manifest.json"),
+            JsonSerializer.SerializeToUtf8Bytes(ManifestWith(ManifestStatus.Completed), BuildAnalyticsJson.Options));
+
+        var runDirectory = Path.Combine(root.Path, "runs", "1");
+        Directory.CreateDirectory(runDirectory);
+        await File.WriteAllBytesAsync(
+            Path.Combine(runDirectory, "run.json"),
+            JsonSerializer.SerializeToUtf8Bytes(Run(1, "succeeded"), BuildAnalyticsJson.Options));
+
+        var beforePaths = Directory
+            .GetFileSystemEntries(root.Path, "*", SearchOption.AllDirectories)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+        var beforeBytes = beforePaths
+            .Where(File.Exists)
+            .ToDictionary(path => path, File.ReadAllBytes, StringComparer.Ordinal);
+
+        using var manifestReader = FileManifestStore.OpenReadOnly(root.Path);
+        var service = new ReportingService(
+            manifestReader,
+            new FileRunStore(root.Path, new PhysicalFileOperations()),
+            new InMemoryTimingReportWriter());
+
+        var result = await service.GenerateAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.RunsRead);
+        Assert.False(File.Exists(Path.Combine(root.Path, "manifest.lock")));
+
+        var afterPaths = Directory
+            .GetFileSystemEntries(root.Path, "*", SearchOption.AllDirectories)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(beforePaths, afterPaths);
+
+        foreach (var path in beforeBytes.Keys)
+        {
+            Assert.Equal(beforeBytes[path], await File.ReadAllBytesAsync(path, CancellationToken.None));
+        }
     }
 
     [Fact]
