@@ -94,7 +94,6 @@ public sealed class ReportingServiceTests
         Assert.True(runsSheet.Cell(2, 1).IsEmpty());
         // ClosedXML supports header-only ListObjects, so even a zero-run root gets a real table.
         Assert.Equal("RunsTable", runsSheet.Table("RunsTable").Name);
-        Assert.True(workbook.Worksheet("Pivot").PivotTables.First().RowLabels.Contains("Month"));
     }
 
     [Fact]

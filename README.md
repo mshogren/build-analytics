@@ -65,12 +65,14 @@ dotnet run --project src/BuildAnalytics.App -- report \
 `--out` is optional and defaults to `<output-root>/timing-report.xlsx`. Reporting
 requires a **completed** retrieval in that root; otherwise it exits non-zero.
 
-The workbook has four sheets:
+The workbook has three sheets:
 
 - **Overview** — Runs, Succeeded, Failed, Partially Succeeded, Canceled, Not Started, Wait > 5 Min, and average queue-wait / run / total duration (seconds). It is **filter-aware**: the values are `SUBTOTAL` formulas over the `Runs` table, so filtering `Runs` updates them (in Excel).
-- **Monthly** — the same columns per UTC month, `(unknown)` last. These are **static** snapshots of the full run set and do **not** follow the `Runs` filter (a note on the sheet says so).
-- **Runs** — an Excel Table with one row per stored run and its raw fields plus computed durations, ordered by `QueueTime` ascending (nulls last) then `RunId`. Columns: `RunId`, `DefinitionId`, `DefinitionName`, `BuildNumber`, `QueueTime`, `StartTime`, `FinishTime`, `Status`, `Result`, `Reason`, `PoolId`, `PoolName`, `SourceBranch`, `QueueWaitSeconds`, `RunDurationSeconds`, `TotalDurationSeconds`. Hidden 1/0 helper columns (`IsSucceeded`, `IsFailed`, `IsPartiallySucceeded`, `IsCanceled`, `IsNotStarted`, `WaitOver5Min`, `Month`) feed the formulas and pivot.
-- **Pivot** — a PivotTable sourced from the `Runs` table (rows = `Month`, values = Count of `RunId`, sums of the status/`WaitOver5Min` flags, and the average queue wait) for interactive slicing.
+- **Monthly** — the same columns per UTC month, `(unknown)` last. It is **filter-aware too**: each cell is a `SUMIFS`/`AVERAGEIFS` over the `Runs` table carrying an explicit `Visible = 1` criterion, so filtering `Runs` updates the monthly rows as well.
+- **Runs** — an Excel Table with one row per stored run and its raw fields plus computed durations, ordered by `QueueTime` ascending (nulls last) then `RunId`. Columns: `RunId`, `DefinitionId`, `DefinitionName`, `BuildNumber`, `QueueTime`, `StartTime`, `FinishTime`, `Status`, `Result`, `Reason`, `PoolId`, `PoolName`, `SourceBranch`, `QueueWaitSeconds`, `RunDurationSeconds`, `TotalDurationSeconds`. Hidden helper columns (`IsSucceeded`, `IsFailed`, `IsPartiallySucceeded`, `IsCanceled`, `IsNotStarted`, `WaitOver5Min`, `Month`, `Visible`) feed the formulas.
+
+Because `Runs` is a proper Excel Table, you can select it and insert your own
+PivotTable or PivotChart natively (`Insert > PivotTable`).
 
 All durations are seconds. Blank cells mean "not available" (not zero). Corrupt
 run files are skipped and do not appear on the `Runs` sheet. A completed root

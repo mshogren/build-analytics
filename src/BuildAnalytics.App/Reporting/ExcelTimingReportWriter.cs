@@ -13,9 +13,10 @@ namespace BuildAnalytics.App.Reporting;
 /// (temp -> flush -> rename) through <see cref="AtomicFileWriter"/>, so a failed write never
 /// truncates a prior report and leaves no staged temp file behind.
 ///
-/// The raw <c>Runs</c> sheet is an Excel Table; <c>Overview</c> uses filter-aware
-/// <c>SUBTOTAL(101-111)</c> formulas over it (never COUNTIFS/SUMIFS), <c>Monthly</c> is static,
-/// and a <c>Pivot</c> sheet slices the same table.
+/// The raw <c>Runs</c> sheet is an Excel Table and both summary sheets are filter-aware:
+/// <c>Overview</c> uses <c>SUBTOTAL(101-111)</c> and <c>Monthly</c> uses <c>SUMIFS</c>/
+/// <c>AVERAGEIFS</c> carrying an explicit <c>Visible = 1</c> criterion, so filtering the raw
+/// sheet updates them.
 /// </summary>
 public sealed class ExcelTimingReportWriter : ITimingReportWriter
 {
@@ -24,14 +25,9 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
     private const string OverviewSheet = "Overview";
     private const string MonthlySheet = "Monthly";
     private const string RunsSheet = "Runs";
-    private const string PivotSheet = "Pivot";
     private const string RunsTableName = "RunsTable";
-    private const string PivotTableName = "RunsPivot";
     private const string SecondsFormat = "0.00";
     private const string TimestampFormat = "yyyy-mm-dd hh:mm:ss";
-
-    private const string MonthlyNote =
-        "Monthly totals always cover the full run set (they do not follow the Runs filter). Use the Pivot sheet to slice interactively.";
 
     private static readonly string[] MonthlyHeaders =
     [
@@ -77,7 +73,8 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         "IsCanceled",
         "IsNotStarted",
         "WaitOver5Min",
-        "Month"
+        "Month",
+        "Visible"
     ];
 
     private static readonly string[] RunsTableHeaders = [.. RunsHeaders, .. HelperHeaders];
@@ -140,11 +137,10 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
 
         BuildOverview(workbook);
 
-        // ADR-105: Monthly stays static (from the summary).
+        // ADR-107: Monthly is filter-aware too (SUMIFS/AVERAGEIFS + the Visible helper).
         BuildMonthly(workbook, report.Summary.Months);
 
-        var runsTable = BuildRuns(workbook, report.Runs);
-        BuildPivot(workbook, runsTable);
+        BuildRuns(workbook, report.Runs);
 
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
@@ -187,24 +183,51 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         foreach (var month in months)
         {
             sheet.Cell(row, 1).Value = month.Month;
-            sheet.Cell(row, 2).Value = month.Totals.RunCount;
-            sheet.Cell(row, 3).Value = month.Totals.SucceededCount;
-            sheet.Cell(row, 4).Value = month.Totals.FailedCount;
-            sheet.Cell(row, 5).Value = month.Totals.PartiallySucceededCount;
-            sheet.Cell(row, 6).Value = month.Totals.CanceledCount;
-            sheet.Cell(row, 7).Value = month.Totals.NotStartedCount;
-            sheet.Cell(row, 8).Value = month.Totals.WaitOverFiveMinutesCount;
-            WriteAverage(sheet, row, 9, month.Totals.AverageQueueWaitSeconds);
-            WriteAverage(sheet, row, 10, month.Totals.AverageRunDurationSeconds);
-            WriteAverage(sheet, row, 11, month.Totals.AverageTotalDurationSeconds);
+
+            // ADR-107: SUMIFS/AVERAGEIFS ignore the autofilter on their own, so every
+            // aggregation carries an explicit Visible = 1 criterion. The (unknown) bucket has a
+            // BLANK Month helper, so its criterion is blank text rather than a month label.
+            var criterion = string.Equals(month.Month, MonthlyTimingRollup.UnknownMonthKey, StringComparison.Ordinal)
+                ? "\"\""
+                : $"$A{row}";
+
+            // The Runs count sums the Visible helper itself, so it needs no separate criterion.
+            WriteMonthlySum(sheet, row, 2, "Visible", criterion, countVisible: false);
+            WriteMonthlySum(sheet, row, 3, "IsSucceeded", criterion, countVisible: true);
+            WriteMonthlySum(sheet, row, 4, "IsFailed", criterion, countVisible: true);
+            WriteMonthlySum(sheet, row, 5, "IsPartiallySucceeded", criterion, countVisible: true);
+            WriteMonthlySum(sheet, row, 6, "IsCanceled", criterion, countVisible: true);
+            WriteMonthlySum(sheet, row, 7, "IsNotStarted", criterion, countVisible: true);
+            WriteMonthlySum(sheet, row, 8, "WaitOver5Min", criterion, countVisible: true);
+            WriteMonthlyAverage(sheet, row, 9, "QueueWaitSeconds", criterion);
+            WriteMonthlyAverage(sheet, row, 10, "RunDurationSeconds", criterion);
+            WriteMonthlyAverage(sheet, row, 11, "TotalDurationSeconds", criterion);
             row++;
         }
-
-        // ADR-107: Monthly is deliberately static; one note two rows below the last data row.
-        sheet.Cell(1 + months.Count + 2, 1).Value = MonthlyNote;
     }
 
-    private static IXLTable BuildRuns(XLWorkbook workbook, IReadOnlyList<BuildRun> runs)
+    private static void WriteMonthlySum(
+        IXLWorksheet sheet,
+        int row,
+        int column,
+        string helper,
+        string criterion,
+        bool countVisible)
+    {
+        var visible = countVisible ? $",{RunsTableName}[Visible],1" : string.Empty;
+        sheet.Cell(row, column).FormulaA1 =
+            $"=IFERROR(SUMIFS({RunsTableName}[{helper}],{RunsTableName}[Month],{criterion}{visible}),0)";
+    }
+
+    private static void WriteMonthlyAverage(IXLWorksheet sheet, int row, int column, string columnName, string criterion)
+    {
+        var cell = sheet.Cell(row, column);
+        cell.FormulaA1 =
+            $"=IFERROR(AVERAGEIFS({RunsTableName}[{columnName}],{RunsTableName}[Month],{criterion},{RunsTableName}[Visible],1,{RunsTableName}[{columnName}],\"<>\"),\"\")";
+        cell.Style.NumberFormat.Format = SecondsFormat;
+    }
+
+    private static void BuildRuns(XLWorkbook workbook, IReadOnlyList<BuildRun> runs)
     {
         var sheet = workbook.Worksheets.Add(RunsSheet);
 
@@ -251,11 +274,15 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
             sheet.Cell(row, 22).Value =
                 timing.QueueWaitSeconds is { } wait && wait > TimingCalculator.WaitOverFiveMinutesThresholdSeconds ? 1 : 0;
 
-            // Month feeds the Pivot; blank when the queue time is absent.
+            // Month is the grouping key for the Monthly formulas; blank when absent.
             if (run.QueueTime is { } queueTime)
             {
                 sheet.Cell(row, 23).Value = queueTime.UtcDateTime.ToString("yyyy-MM", CultureInfo.InvariantCulture);
             }
+
+            // ADR-107: per-row visibility flag (1 visible, 0 hidden by the autofilter) - this is
+            // what makes SUMIFS/AVERAGEIFS follow the filter.
+            sheet.Cell(row, 24).FormulaA1 = $"=SUBTOTAL(103,$A{row})";
 
             row++;
         }
@@ -269,22 +296,6 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         {
             sheet.Column(column).Hide();
         }
-
-        return table;
-    }
-
-    private static void BuildPivot(XLWorkbook workbook, IXLTable runsTable)
-    {
-        var sheet = workbook.Worksheets.Add(PivotSheet);
-        var pivot = sheet.PivotTables.Add(PivotTableName, sheet.Cell("A1"), runsTable);
-
-        pivot.RowLabels.Add("Month");
-        pivot.Values.Add("RunId", "Count of RunId").SummaryFormula = XLPivotSummary.Count;
-        pivot.Values.Add("IsSucceeded", "Sum of IsSucceeded").SummaryFormula = XLPivotSummary.Sum;
-        pivot.Values.Add("IsFailed", "Sum of IsFailed").SummaryFormula = XLPivotSummary.Sum;
-        pivot.Values.Add("WaitOver5Min", "Sum of WaitOver5Min").SummaryFormula = XLPivotSummary.Sum;
-        pivot.Values.Add("QueueWaitSeconds", "Average of QueueWaitSeconds").SummaryFormula = XLPivotSummary.Average;
-        pivot.PivotCache.RefreshDataOnOpen = true;
     }
 
     private static void WriteFormula(IXLWorksheet sheet, ref int row, string metric, string formula, string? format = null)
@@ -298,19 +309,6 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         }
 
         row++;
-    }
-
-    private static void WriteAverage(IXLWorksheet sheet, int row, int column, double? value)
-    {
-        if (value is not { } number)
-        {
-            // Null average renders as a blank cell (ADR-76).
-            return;
-        }
-
-        var cell = sheet.Cell(row, column);
-        cell.Value = number;
-        cell.Style.NumberFormat.Format = SecondsFormat;
     }
 
     private static void WriteText(IXLWorksheet sheet, int row, int column, string? value)

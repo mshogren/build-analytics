@@ -10,27 +10,24 @@ namespace BuildAnalytics.Tests.Reporting;
 
 public sealed class ExcelTimingReportWriterTests
 {
-    private const string MonthlyNote =
-        "Monthly totals always cover the full run set (they do not follow the Runs filter). Use the Pivot sheet to slice interactively.";
-
     private static readonly string[] RunsTableHeaders =
     [
         "RunId", "DefinitionId", "DefinitionName", "BuildNumber",
         "QueueTime", "StartTime", "FinishTime", "Status", "Result", "Reason",
         "PoolId", "PoolName", "SourceBranch",
         "QueueWaitSeconds", "RunDurationSeconds", "TotalDurationSeconds",
-        "IsSucceeded", "IsFailed", "IsPartiallySucceeded", "IsCanceled", "IsNotStarted", "WaitOver5Min", "Month"
+        "IsSucceeded", "IsFailed", "IsPartiallySucceeded", "IsCanceled", "IsNotStarted", "WaitOver5Min", "Month", "Visible"
     ];
 
     [Fact]
-    public void Workbook_has_overview_monthly_runs_and_pivot_sheets()
+    public void Workbook_has_overview_monthly_and_runs_sheets()
     {
         using var workbook = Open(SampleReport());
 
         Assert.True(workbook.Worksheets.TryGetWorksheet("Overview", out _));
         Assert.True(workbook.Worksheets.TryGetWorksheet("Monthly", out _));
         Assert.True(workbook.Worksheets.TryGetWorksheet("Runs", out _));
-        Assert.True(workbook.Worksheets.TryGetWorksheet("Pivot", out _));
+        Assert.Equal(3, workbook.Worksheets.Count);
     }
 
     [Fact]
@@ -68,7 +65,7 @@ public sealed class ExcelTimingReportWriterTests
     }
 
     [Fact]
-    public void Overview_uses_no_countifs_or_sumifs_anywhere()
+    public void Every_summary_aggregation_follows_the_runs_filter()
     {
         using var workbook = Open(SampleReport());
 
@@ -81,14 +78,23 @@ public sealed class ExcelTimingReportWriterTests
                     continue;
                 }
 
-                Assert.DoesNotContain("COUNTIF", cell.FormulaA1, StringComparison.OrdinalIgnoreCase);
-                Assert.DoesNotContain("SUMIF", cell.FormulaA1, StringComparison.OrdinalIgnoreCase);
+                var formula = cell.FormulaA1;
+
+                // COUNTIFS/SUMIFS without help never respect hidden rows; COUNTIF is never used.
+                Assert.DoesNotContain("COUNTIF", formula, StringComparison.OrdinalIgnoreCase);
+
+                // ADR-107: any conditional aggregation must carry the Visible criterion (the
+                // Runs count sums the Visible helper itself, so it also mentions it).
+                if (formula.Contains("SUMIF", StringComparison.OrdinalIgnoreCase))
+                {
+                    Assert.Contains("RunsTable[Visible]", formula, StringComparison.Ordinal);
+                }
             }
         }
     }
 
     [Fact]
-    public void Monthly_preserves_month_order_with_unknown_last()
+    public void Monthly_is_filter_aware_with_the_blank_criterion_for_unknown()
     {
         using var workbook = Open(SampleReport());
         var sheet = workbook.Worksheet("Monthly");
@@ -96,19 +102,26 @@ public sealed class ExcelTimingReportWriterTests
         Assert.Equal("Month", sheet.Cell(1, 1).GetString());
         Assert.Equal("Runs", sheet.Cell(1, 2).GetString());
         Assert.Equal("2024-01", sheet.Cell(2, 1).GetString());
-        Assert.Equal(6, sheet.Cell(2, 2).GetValue<int>());
         Assert.Equal("(unknown)", sheet.Cell(3, 1).GetString());
-        Assert.Equal(4, sheet.Cell(3, 2).GetValue<int>());
-    }
 
-    [Fact]
-    public void Monthly_carries_the_static_totals_note_two_rows_below_the_last_data_row()
-    {
-        using var workbook = Open(SampleReport());
-        var sheet = workbook.Worksheet("Monthly");
+        // Real month: the criterion is the month label cell, plus Visible = 1.
+        Assert.Equal("IFERROR(SUMIFS(RunsTable[Visible],RunsTable[Month],$A2),0)", sheet.Cell(2, 2).FormulaA1);
+        Assert.Equal("IFERROR(SUMIFS(RunsTable[IsSucceeded],RunsTable[Month],$A2,RunsTable[Visible],1),0)", sheet.Cell(2, 3).FormulaA1);
+        Assert.Equal("IFERROR(SUMIFS(RunsTable[WaitOver5Min],RunsTable[Month],$A2,RunsTable[Visible],1),0)", sheet.Cell(2, 8).FormulaA1);
+        Assert.Equal(
+            "IFERROR(AVERAGEIFS(RunsTable[QueueWaitSeconds],RunsTable[Month],$A2,RunsTable[Visible],1,RunsTable[QueueWaitSeconds],\"<>\"),\"\")",
+            sheet.Cell(2, 9).FormulaA1);
+        Assert.Equal("0.00", sheet.Cell(2, 9).Style.NumberFormat.Format);
 
-        // Sample has 2 month rows (2..3); the note sits at row 5.
-        Assert.Equal(MonthlyNote, sheet.Cell(5, 1).GetString());
+        // (unknown) bucket: the Month helper is blank, so its criterion is blank text.
+        Assert.Equal("IFERROR(SUMIFS(RunsTable[Visible],RunsTable[Month],\"\"),0)", sheet.Cell(3, 2).FormulaA1);
+
+        // No static values remain in the monthly value columns.
+        for (var column = 2; column <= 11; column++)
+        {
+            Assert.True(sheet.Cell(2, column).HasFormula, $"Monthly row 2 column {column} must be a formula");
+            Assert.True(sheet.Cell(3, column).HasFormula, $"Monthly row 3 column {column} must be a formula");
+        }
     }
 
     [Fact]
@@ -197,6 +210,7 @@ public sealed class ExcelTimingReportWriterTests
         Assert.Equal(1, sheet.Cell(6, 21).GetValue<int>());  // IsNotStarted
         Assert.Equal(1, sheet.Cell(3, 22).GetValue<int>());  // WaitOver5Min (400 > 300)
         Assert.Equal("2024-01", sheet.Cell(2, 23).GetString());
+        Assert.Equal("SUBTOTAL(103,$A2)", sheet.Cell(2, 24).FormulaA1);  // per-row visibility
     }
 
     [Fact]
@@ -238,25 +252,7 @@ public sealed class ExcelTimingReportWriterTests
     }
 
     [Fact]
-    public void Pivot_sheet_sources_the_runs_table()
-    {
-        using var workbook = Open(SampleReport());
-        var sheet = workbook.Worksheet("Pivot");
-        var pivot = sheet.PivotTables.First();
-
-        Assert.Equal("RunsPivot", pivot.Name);
-        Assert.True(pivot.RowLabels.Contains("Month"));
-        Assert.Contains(pivot.Values, value => value.SourceName == "RunId" && value.SummaryFormula == XLPivotSummary.Count);
-        Assert.Contains(pivot.Values, value => value.SourceName == "IsSucceeded" && value.SummaryFormula == XLPivotSummary.Sum);
-        Assert.Contains(pivot.Values, value => value.SourceName == "IsFailed" && value.SummaryFormula == XLPivotSummary.Sum);
-        Assert.Contains(pivot.Values, value => value.SourceName == "WaitOver5Min" && value.SummaryFormula == XLPivotSummary.Sum);
-        Assert.Contains(pivot.Values, value => value.SourceName == "QueueWaitSeconds" && value.SummaryFormula == XLPivotSummary.Average);
-        Assert.Contains("Month", pivot.PivotCache.FieldNames);
-        Assert.Contains("RunId", pivot.PivotCache.FieldNames);
-    }
-
-    [Fact]
-    public void Zero_run_workbook_has_a_header_only_runs_table_and_pivot()
+    public void Zero_run_workbook_has_a_header_only_runs_table()
     {
         var report = new TimingReport(MonthlyTimingRollup.Summarize([]), []);
 
@@ -266,7 +262,6 @@ public sealed class ExcelTimingReportWriterTests
 
         Assert.Equal(RunsTableHeaders, table.Fields.Select(field => field.Name).ToArray());
         Assert.True(sheet.Cell(2, 1).IsEmpty());
-        Assert.True(workbook.Worksheet("Pivot").PivotTables.First().RowLabels.Contains("Month"));
     }
 
     [Fact]
@@ -281,20 +276,21 @@ public sealed class ExcelTimingReportWriterTests
         Assert.True(workbook.FullCalculationOnLoad);
         Assert.True(workbook.Worksheets.TryGetWorksheet("Runs", out _));
         Assert.Equal("RunsTable", workbook.Worksheet("Runs").Table("RunsTable").Name);
-        Assert.Equal("RunsPivot", workbook.Worksheet("Pivot").PivotTables.First().Name);
         Assert.Equal("IFERROR(SUBTOTAL(103,RunsTable[RunId]),0)", workbook.Worksheet("Overview").Cell("B2").FormulaA1);
     }
 
     [Fact]
-    public void Null_monthly_averages_render_as_blank_cells()
+    public void Monthly_average_formulas_degrade_to_blank()
     {
         var bytes = ExcelTimingReportWriter.BuildWorkbook(new TimingReport(NullAverageSummary(), []));
         using var workbook = new XLWorkbook(new MemoryStream(bytes));
         var monthly = workbook.Worksheet("Monthly");
 
-        Assert.True(monthly.Cell(2, 9).IsEmpty());
-        Assert.True(monthly.Cell(2, 10).IsEmpty());
-        Assert.True(monthly.Cell(2, 11).IsEmpty());
+        // ADR-107: with no visible rows the averages must render blank, not #DIV/0!.
+        Assert.Contains("IFERROR", monthly.Cell(2, 9).FormulaA1, StringComparison.Ordinal);
+        Assert.EndsWith(",\"\")", monthly.Cell(2, 9).FormulaA1, StringComparison.Ordinal);
+        Assert.EndsWith(",\"\")", monthly.Cell(2, 10).FormulaA1, StringComparison.Ordinal);
+        Assert.EndsWith(",\"\")", monthly.Cell(2, 11).FormulaA1, StringComparison.Ordinal);
     }
 
     [Fact]
