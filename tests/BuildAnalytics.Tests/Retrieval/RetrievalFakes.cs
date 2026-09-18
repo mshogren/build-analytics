@@ -182,21 +182,27 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
             _runs.Keys.Concat(ListedButAbsent).Distinct().OrderBy(id => id).ToArray());
 }
 
-/// <summary>Records the ordered progress events the pipeline emits (ADR-96).</summary>
-internal sealed class RecordingRetrievalProgress : IRetrievalProgress
+/// <summary>Records the ordered progress events the pipeline emits (ADR-96) and mirrors them into the shared event log.</summary>
+internal sealed class RecordingRetrievalProgress(EventLog? log = null) : IRetrievalProgress
 {
     public List<string> Events { get; } = [];
 
-    public void Started(int? total) => Events.Add($"started:{total?.ToString() ?? "-"}");
+    public void Started(int? total) => Record($"started:{total?.ToString() ?? "-"}");
 
-    public void PageFetched(int pageNumber, int runsInPage) => Events.Add($"page:{pageNumber}:{runsInPage}");
+    public void PageFetched(int pageNumber, int runsInPage) => Record($"page:{pageNumber}:{runsInPage}");
 
-    public void PercentComplete(int percent, int completed, int total) => Events.Add($"percent:{percent}:{completed}/{total}");
+    public void PercentComplete(int percent, int completed, int total) => Record($"percent:{percent}:{completed}/{total}");
 
-    public void Restarting() => Events.Add("restarting");
+    public void Restarting() => Record("restarting");
 
     public void Paused(PauseReason reason, TimeSpan? retryAfter, int? remainingBudget)
-        => Events.Add($"paused:{reason}");
+        => Record($"paused:{reason}");
 
-    public void Completed(int pages, int runsWritten) => Events.Add($"completed:{pages}:{runsWritten}");
+    public void Completed(int pages, int runsWritten) => Record($"completed:{pages}:{runsWritten}");
+
+    private void Record(string entry)
+    {
+        Events.Add(entry);
+        log?.Add($"progress:{entry}");
+    }
 }

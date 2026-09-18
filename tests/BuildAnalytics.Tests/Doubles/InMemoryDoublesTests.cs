@@ -45,14 +45,16 @@ public sealed class InMemoryDoublesTests
     }
 
     [Fact]
-    public async Task InMemoryTimingReportWriter_CapturesSummary()
+    public async Task InMemoryTimingReportWriter_CapturesReport()
     {
         var writer = new InMemoryTimingReportWriter();
         var summary = MonthlyTimingRollup.Summarize([]);
+        var report = new TimingReport(summary, []);
 
-        await writer.WriteAsync(summary, CancellationToken.None);
+        await writer.WriteAsync(report, CancellationToken.None);
 
-        Assert.Equal(summary, writer.Summary);
+        Assert.Equal(report, writer.Report);
+        Assert.Equal(summary, writer.Report!.Summary);
     }
 }
 
@@ -89,11 +91,11 @@ internal sealed class InMemoryManifestStore : IManifestStore
 
 internal sealed class InMemoryTimingReportWriter : ITimingReportWriter
 {
-    public TimingSummary? Summary { get; private set; }
+    public TimingReport? Report { get; private set; }
 
-    public Task WriteAsync(TimingSummary summary, CancellationToken cancellationToken)
+    public Task WriteAsync(TimingReport report, CancellationToken cancellationToken)
     {
-        Summary = summary;
+        Report = report;
         return Task.CompletedTask;
     }
 }

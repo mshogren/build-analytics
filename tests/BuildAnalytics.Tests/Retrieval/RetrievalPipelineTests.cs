@@ -24,7 +24,15 @@ public sealed class RetrievalPipelineTests
         Assert.Equal(1, result.RunsWritten);
         Assert.Empty(result.FailedRunIds);
         Assert.Equal(
-            ["manifest:inprogress:<null>", "list:<start>", "run:1", "manifest:completed:<null>"],
+            [
+                "manifest:inprogress:<null>",
+                "progress:started:-",
+                "list:<start>",
+                "progress:page:1:1",
+                "run:1",
+                "manifest:completed:<null>",
+                "progress:completed:1:1"
+            ],
             log.Events);
         Assert.Equal(ManifestStatus.InProgress, manifests.Commits[0].Status);
         Assert.Null(manifests.Commits[0].Cursor);
@@ -695,8 +703,8 @@ public sealed class RetrievalPipelineTests
             [
                 "started:-",
                 "page:1:15",
-                "percent:5:15/100",
-                "percent:10:15/100",
+                "percent:5:5/100",
+                "percent:10:10/100",
                 "percent:15:15/100",
                 "completed:1:15"
             ],
@@ -713,9 +721,10 @@ public sealed class RetrievalPipelineTests
 
         await pipeline.RunAsync(Query(), CancellationToken.None);
 
-        Assert.Contains("percent:85:95/95", progress.Events);
-        Assert.Contains("percent:90:95/95", progress.Events);
-        Assert.Contains("percent:95:95/95", progress.Events);
+        Assert.Contains("percent:85:81/95", progress.Events);
+        Assert.Contains("percent:90:86/95", progress.Events);
+        Assert.Contains("percent:95:91/95", progress.Events);
+        Assert.Contains("percent:100:95/95", progress.Events);
     }
 
     [Fact]
@@ -743,6 +752,22 @@ public sealed class RetrievalPipelineTests
         // baseline = 1, so repairing run 1 must not advance handled: 1/3, not 2/3 (ADR-102).
         Assert.Contains("percent:30:1/3", progress.Events);
         Assert.DoesNotContain("percent:65:2/3", progress.Events);
+    }
+
+    [Fact]
+    public async Task Progress_ticks_during_a_page_before_the_final_write()
+    {
+        var (pipeline, source, _, _, _, log, _) = Create();
+        source.Page(null, new BuildPage(Enumerable.Range(1, 4).Select(id => TestRuns.Create(id: id)).ToArray(), null, TotalCount: 20));
+
+        await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        // ADR-104: ticks must interleave with the page's writes, not burst at the end.
+        var firstPercent = log.Events.FindIndex(entry => entry.StartsWith("progress:percent:", StringComparison.Ordinal));
+        var lastWrite = log.Events.FindLastIndex(entry => entry.StartsWith("run:", StringComparison.Ordinal));
+
+        Assert.True(firstPercent >= 0, $"no percent tick in: {string.Join(", ", log.Events)}");
+        Assert.True(firstPercent < lastWrite, $"tick came after the final write: {string.Join(", ", log.Events)}");
     }
 
     // ---- helpers ----
@@ -791,7 +816,7 @@ public sealed class RetrievalPipelineTests
         var runs = new RecordingRunStore(log);
         var manifests = new RecordingManifestStore(log);
         var clock = new FakeTimeProvider { UtcNow = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero) };
-        var progress = new RecordingRetrievalProgress();
+        var progress = new RecordingRetrievalProgress(log);
         var pipeline = new RetrievalPipeline(source, runs, manifests, clock, progress);
         return (pipeline, source, runs, manifests, clock, log, progress);
     }

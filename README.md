@@ -65,12 +65,15 @@ dotnet run --project src/BuildAnalytics.App -- report \
 `--out` is optional and defaults to `<output-root>/timing-report.xlsx`. Reporting
 requires a **completed** retrieval in that root; otherwise it exits non-zero.
 
-The workbook has two sheets:
+The workbook has three sheets:
 
 - **Overview** — Runs, Succeeded, Failed, Partially Succeeded, Canceled, Not Started, Wait > 5 Min, and average queue-wait / run / total duration (seconds)
 - **Monthly** — the same columns per UTC month, `(unknown)` last
+- **Runs** — one row per stored run with its raw fields and computed durations, ordered by `QueueTime` ascending (nulls last) then `RunId`. Columns: `RunId`, `DefinitionId`, `DefinitionName`, `BuildNumber`, `QueueTime`, `StartTime`, `FinishTime`, `Status`, `Result`, `Reason`, `PoolId`, `PoolName`, `SourceBranch`, `QueueWaitSeconds`, `RunDurationSeconds`, `TotalDurationSeconds`
 
-All durations are seconds. Blank cells mean "not available" (not zero).
+All durations are seconds. Blank cells mean "not available" (not zero). Corrupt
+run files are skipped and do not appear on the `Runs` sheet. A completed root
+with no runs still gets a `Runs` sheet with the header row only.
 
 ## Configuration file
 

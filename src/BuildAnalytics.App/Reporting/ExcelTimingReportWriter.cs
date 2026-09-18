@@ -1,5 +1,7 @@
+using System.Globalization;
 using BuildAnalytics.App.Storage;
 using BuildAnalytics.Core.Errors;
+using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Ports;
 using BuildAnalytics.Core.Timing;
 using ClosedXML.Excel;
@@ -7,7 +9,7 @@ using ClosedXML.Excel;
 namespace BuildAnalytics.App.Reporting;
 
 /// <summary>
-/// Excel adapter for the timing report (ADR-76). Owns its destination and writes atomically
+/// Excel adapter for the timing report (ADR-76/105). Owns its destination and writes atomically
 /// (temp -> flush -> rename) through <see cref="AtomicFileWriter"/>, so a failed write never
 /// truncates a prior report and leaves no staged temp file behind.
 /// </summary>
@@ -17,6 +19,7 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
 
     private const string OverviewSheet = "Overview";
     private const string MonthlySheet = "Monthly";
+    private const string RunsSheet = "Runs";
     private const string SecondsFormat = "0.00";
 
     private static readonly string[] MonthlyHeaders =
@@ -34,6 +37,26 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         "Avg Total (sec)"
     ];
 
+    private static readonly string[] RunsHeaders =
+    [
+        "RunId",
+        "DefinitionId",
+        "DefinitionName",
+        "BuildNumber",
+        "QueueTime",
+        "StartTime",
+        "FinishTime",
+        "Status",
+        "Result",
+        "Reason",
+        "PoolId",
+        "PoolName",
+        "SourceBranch",
+        "QueueWaitSeconds",
+        "RunDurationSeconds",
+        "TotalDurationSeconds"
+    ];
+
     private readonly string _destinationPath;
     private readonly AtomicFileWriter _writer;
 
@@ -45,11 +68,11 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         _writer = new AtomicFileWriter(fileOperations ?? new PhysicalFileOperations());
     }
 
-    public async Task WriteAsync(TimingSummary summary, CancellationToken cancellationToken)
+    public async Task WriteAsync(TimingReport report, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(summary);
+        ArgumentNullException.ThrowIfNull(report);
 
-        var bytes = BuildWorkbook(summary);
+        var bytes = BuildWorkbook(report);
 
         try
         {
@@ -81,13 +104,14 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
     }
 
     /// <summary>In-memory workbook bytes; exposed for tests that inspect the layout without a file.</summary>
-    public static byte[] BuildWorkbook(TimingSummary summary)
+    public static byte[] BuildWorkbook(TimingReport report)
     {
-        ArgumentNullException.ThrowIfNull(summary);
+        ArgumentNullException.ThrowIfNull(report);
 
         using var workbook = new XLWorkbook();
-        BuildOverview(workbook, summary.Overall);
-        BuildMonthly(workbook, summary.Months);
+        BuildOverview(workbook, report.Summary.Overall);
+        BuildMonthly(workbook, report.Summary.Months);
+        BuildRuns(workbook, report.Runs);
 
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
@@ -140,6 +164,47 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         }
     }
 
+    private static void BuildRuns(XLWorkbook workbook, IReadOnlyList<BuildRun> runs)
+    {
+        var sheet = workbook.Worksheets.Add(RunsSheet);
+
+        for (var column = 0; column < RunsHeaders.Length; column++)
+        {
+            sheet.Cell(1, column + 1).Value = RunsHeaders[column];
+        }
+
+        // ADR-105: QueueTime ascending, nulls last, then RunId ascending - deterministic.
+        var ordered = runs
+            .OrderBy(run => run.QueueTime is null ? 1 : 0)
+            .ThenBy(run => run.QueueTime ?? DateTimeOffset.MinValue)
+            .ThenBy(run => run.Id)
+            .ToArray();
+
+        var row = 2;
+        foreach (var run in ordered)
+        {
+            var timing = TimingCalculator.Calculate(run);
+
+            sheet.Cell(row, 1).Value = run.Id;
+            WriteOptionalInt(sheet, row, 2, run.DefinitionId);
+            WriteText(sheet, row, 3, run.DefinitionName);
+            WriteText(sheet, row, 4, run.BuildNumber);
+            WriteTimestamp(sheet, row, 5, run.QueueTime);
+            WriteTimestamp(sheet, row, 6, run.StartTime);
+            WriteTimestamp(sheet, row, 7, run.FinishTime);
+            WriteText(sheet, row, 8, run.Status);
+            WriteText(sheet, row, 9, run.Result);
+            WriteText(sheet, row, 10, run.Reason);
+            WriteOptionalInt(sheet, row, 11, run.PoolId);
+            WriteText(sheet, row, 12, run.PoolName);
+            WriteText(sheet, row, 13, run.SourceBranch);
+            WriteOptionalDouble(sheet, row, 14, timing.QueueWaitSeconds);
+            WriteOptionalDouble(sheet, row, 15, timing.RunDurationSeconds);
+            WriteOptionalDouble(sheet, row, 16, timing.TotalDurationSeconds);
+            row++;
+        }
+    }
+
     private static void WriteCount(IXLWorksheet sheet, ref int row, string metric, int value)
     {
         sheet.Cell(row, 1).Value = metric;
@@ -165,5 +230,41 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         var cell = sheet.Cell(row, column);
         cell.Value = number;
         cell.Style.NumberFormat.Format = SecondsFormat;
+    }
+
+    private static void WriteText(IXLWorksheet sheet, int row, int column, string? value)
+    {
+        if (value is not null)
+        {
+            sheet.Cell(row, column).Value = value;
+        }
+    }
+
+    private static void WriteOptionalInt(IXLWorksheet sheet, int row, int column, int? value)
+    {
+        if (value is { } number)
+        {
+            sheet.Cell(row, column).Value = number;
+        }
+    }
+
+    private static void WriteOptionalDouble(IXLWorksheet sheet, int row, int column, double? value)
+    {
+        if (value is not { } number)
+        {
+            return;
+        }
+
+        var cell = sheet.Cell(row, column);
+        cell.Value = number;
+        cell.Style.NumberFormat.Format = SecondsFormat;
+    }
+
+    private static void WriteTimestamp(IXLWorksheet sheet, int row, int column, DateTimeOffset? value)
+    {
+        if (value is { } timestamp)
+        {
+            sheet.Cell(row, column).Value = timestamp.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+        }
     }
 }

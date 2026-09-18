@@ -5,8 +5,8 @@ using BuildAnalytics.Core.Timing;
 
 namespace BuildAnalytics.App.Reporting;
 
-/// <summary>Summary produced from local raw files plus how it was assembled.</summary>
-public sealed record ReportingResult(TimingSummary Summary, int RunsRead, int CorruptSkipped);
+/// <summary>Report produced from local raw files plus how it was assembled.</summary>
+public sealed record ReportingResult(TimingReport Report, int RunsRead, int CorruptSkipped);
 
 /// <summary>
 /// Offline reporting (ADR-74..77): reads a completed root through the read-only manifest
@@ -55,8 +55,9 @@ public sealed class ReportingService(
         }
 
         var summary = MonthlyTimingRollup.Summarize(loaded);
-        await writer.WriteAsync(summary, cancellationToken).ConfigureAwait(false);
+        var report = new TimingReport(summary, loaded);
+        await writer.WriteAsync(report, cancellationToken).ConfigureAwait(false);
 
-        return new ReportingResult(summary, loaded.Count, corruptSkipped);
+        return new ReportingResult(report, loaded.Count, corruptSkipped);
     }
 }

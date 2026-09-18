@@ -162,6 +162,9 @@ public sealed class RetrievalPipeline(
                 total ??= page.TotalCount;
                 _progress.PageFetched(pagesFetched, page.Runs.Count);
 
+                // ADR-104: reflect the on-disk baseline at page start; per-run ticks follow below.
+                ReportPercent();
+
                 var runsBeforePage = runsWritten;
                 var pageRecordedFailure = false;
 
@@ -210,6 +213,7 @@ public sealed class RetrievalPipeline(
                             if (!existingIdSet.Contains(run.Id))
                             {
                                 handled++;
+                                ReportPercent();
                             }
 
                             pageRecordedFailure = true;
@@ -222,15 +226,14 @@ public sealed class RetrievalPipeline(
                     if (!existingIdSet.Contains(run.Id))
                     {
                         handled++;
+                        ReportPercent();
                     }
 
                     writtenThisPass.Add(run.Id);
                     failedRunIds.Remove(run.Id);
                 }
 
-                ReportPercent();
-
-                // ADR-97/100: with a descending list, a page that adds no new runs means every
+                // ADR-104: with a descending list, a page that adds no new runs means every
                 // older page is already stored -> stop paging, but only for a completed-root
                 // refresh, only once the page recorded no failure, and only after every prior
                 // failure has been re-encountered (a failed run is not "already stored").

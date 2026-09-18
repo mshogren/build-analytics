@@ -51,10 +51,10 @@ public sealed class ReportingServiceTests
 
         Assert.Equal(0, result.RunsRead);
         Assert.Equal(0, result.CorruptSkipped);
-        Assert.Equal(0, result.Summary.Overall.RunCount);
-        Assert.Empty(result.Summary.Months);
-        Assert.NotNull(writer.Summary);
-        Assert.Equal(result.Summary, writer.Summary);
+        Assert.Equal(0, result.Report.Summary.Overall.RunCount);
+        Assert.Empty(result.Report.Summary.Months);
+        Assert.NotNull(writer.Report!.Summary);
+        Assert.Equal(result.Report.Summary, writer.Report!.Summary);
     }
 
     [Fact]
@@ -85,6 +85,11 @@ public sealed class ReportingServiceTests
         var monthly = workbook.Worksheet("Monthly");
         Assert.Equal("Month", monthly.Cell(1, 1).GetString());
         Assert.True(monthly.Cell(2, 1).IsEmpty());
+
+        var runs = workbook.Worksheet("Runs");
+        Assert.Equal("RunId", runs.Cell(1, 1).GetString());
+        Assert.Equal("TotalDurationSeconds", runs.Cell(1, 16).GetString());
+        Assert.True(runs.Cell(2, 1).IsEmpty());
     }
 
     [Fact]
@@ -100,10 +105,10 @@ public sealed class ReportingServiceTests
 
         Assert.Equal(3, result.RunsRead);
         Assert.Equal(0, result.CorruptSkipped);
-        Assert.Equal(3, result.Summary.Overall.RunCount);
-        Assert.Equal(2, result.Summary.Overall.SucceededCount);
-        Assert.Equal(1, result.Summary.Overall.FailedCount);
-        Assert.Equal(result.Summary, writer.Summary);
+        Assert.Equal(3, result.Report.Summary.Overall.RunCount);
+        Assert.Equal(2, result.Report.Summary.Overall.SucceededCount);
+        Assert.Equal(1, result.Report.Summary.Overall.FailedCount);
+        Assert.Equal(result.Report.Summary, writer.Report!.Summary);
     }
 
     [Fact]
@@ -119,7 +124,9 @@ public sealed class ReportingServiceTests
 
         Assert.Equal(1, result.RunsRead);
         Assert.Equal(1, result.CorruptSkipped);
-        Assert.Equal(1, result.Summary.Overall.RunCount);
+        Assert.Equal(1, result.Report.Summary.Overall.RunCount);
+        Assert.Single(result.Report.Runs);
+        Assert.Equal(1, result.Report.Runs[0].Id);
     }
 
     [Fact]
@@ -145,7 +152,7 @@ public sealed class ReportingServiceTests
 
         Assert.Equal(1, result.RunsRead);
         Assert.Equal(0, result.CorruptSkipped);
-        Assert.Equal(1, result.Summary.Overall.RunCount);
+        Assert.Equal(1, result.Report.Summary.Overall.RunCount);
     }
 
     [Fact]

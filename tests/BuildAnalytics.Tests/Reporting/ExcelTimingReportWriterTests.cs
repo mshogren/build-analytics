@@ -1,6 +1,7 @@
 using BuildAnalytics.App.Reporting;
 using BuildAnalytics.App.Storage;
 using BuildAnalytics.Core.Errors;
+using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Timing;
 using BuildAnalytics.Tests.Storage;
 using ClosedXML.Excel;
@@ -10,19 +11,19 @@ namespace BuildAnalytics.Tests.Reporting;
 public sealed class ExcelTimingReportWriterTests
 {
     [Fact]
-    public void Workbook_has_overview_and_monthly_sheets_and_no_runs_sheet()
+    public void Workbook_has_overview_monthly_and_runs_sheets()
     {
-        using var workbook = Open(SampleSummary());
+        using var workbook = Open(SampleReport());
 
         Assert.True(workbook.Worksheets.TryGetWorksheet("Overview", out _));
         Assert.True(workbook.Worksheets.TryGetWorksheet("Monthly", out _));
-        Assert.False(workbook.Worksheets.TryGetWorksheet("Runs", out _));
+        Assert.True(workbook.Worksheets.TryGetWorksheet("Runs", out _));
     }
 
     [Fact]
     public void Overview_lists_metrics_in_order_with_values()
     {
-        using var workbook = Open(SampleSummary());
+        using var workbook = Open(SampleReport());
         var sheet = workbook.Worksheet("Overview");
 
         Assert.Equal("Metric", sheet.Cell(1, 1).GetString());
@@ -49,7 +50,7 @@ public sealed class ExcelTimingReportWriterTests
     [Fact]
     public void Monthly_preserves_month_order_with_unknown_last()
     {
-        using var workbook = Open(SampleSummary());
+        using var workbook = Open(SampleReport());
         var sheet = workbook.Worksheet("Monthly");
 
         Assert.Equal("Month", sheet.Cell(1, 1).GetString());
@@ -61,9 +62,85 @@ public sealed class ExcelTimingReportWriterTests
     }
 
     [Fact]
+    public void Runs_sheet_has_the_exact_header()
+    {
+        using var workbook = Open(SampleReport());
+        var sheet = workbook.Worksheet("Runs");
+
+        string[] expected =
+        [
+            "RunId", "DefinitionId", "DefinitionName", "BuildNumber",
+            "QueueTime", "StartTime", "FinishTime", "Status", "Result", "Reason",
+            "PoolId", "PoolName", "SourceBranch",
+            "QueueWaitSeconds", "RunDurationSeconds", "TotalDurationSeconds"
+        ];
+
+        for (var column = 0; column < expected.Length; column++)
+        {
+            Assert.Equal(expected[column], sheet.Cell(1, column + 1).GetString());
+        }
+    }
+
+    [Fact]
+    public void Runs_sheet_orders_by_queue_time_ascending_nulls_last_then_id()
+    {
+        var origin = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        BuildRun[] runs =
+        [
+            Run(id: 3, queue: null),
+            Run(id: 2, queue: origin.AddHours(2)),
+            Run(id: 1, queue: origin),
+            Run(id: 4, queue: origin.AddHours(1)),
+            Run(id: 0, queue: null),
+        ];
+        var report = new TimingReport(MonthlyTimingRollup.Summarize(runs), runs);
+
+        using var workbook = Open(report);
+        var sheet = workbook.Worksheet("Runs");
+
+        Assert.Equal(1, sheet.Cell(2, 1).GetValue<int>());
+        Assert.Equal(4, sheet.Cell(3, 1).GetValue<int>());
+        Assert.Equal(2, sheet.Cell(4, 1).GetValue<int>());
+        Assert.Equal(0, sheet.Cell(5, 1).GetValue<int>()); // null QueueTime: RunId ascending
+        Assert.Equal(3, sheet.Cell(6, 1).GetValue<int>());
+    }
+
+    [Fact]
+    public void Runs_sheet_durations_match_TimingCalculator()
+    {
+        var origin = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var run = Run(id: 7, queue: origin, start: origin.AddSeconds(30), finish: origin.AddSeconds(90));
+        var report = new TimingReport(MonthlyTimingRollup.Summarize([run]), [run]);
+
+        using var workbook = Open(report);
+        var sheet = workbook.Worksheet("Runs");
+        var timing = TimingCalculator.Calculate(run);
+
+        Assert.Equal(timing.QueueWaitSeconds!.Value, sheet.Cell(2, 14).GetDouble(), 6);
+        Assert.Equal(timing.RunDurationSeconds!.Value, sheet.Cell(2, 15).GetDouble(), 6);
+        Assert.Equal(timing.TotalDurationSeconds!.Value, sheet.Cell(2, 16).GetDouble(), 6);
+        Assert.Equal("0.00", sheet.Cell(2, 14).Style.NumberFormat.Format);
+    }
+
+    [Fact]
+    public void Runs_sheet_blanks_missing_optional_values()
+    {
+        var run = Run(id: 7, queue: null);
+        var report = new TimingReport(MonthlyTimingRollup.Summarize([run]), [run]);
+
+        using var workbook = Open(report);
+        var sheet = workbook.Worksheet("Runs");
+
+        Assert.Equal(7, sheet.Cell(2, 1).GetValue<int>());
+        Assert.True(sheet.Cell(2, 5).IsEmpty());   // QueueTime
+        Assert.True(sheet.Cell(2, 14).IsEmpty());  // QueueWaitSeconds
+        Assert.True(sheet.Cell(2, 16).IsEmpty());  // TotalDurationSeconds
+    }
+
+    [Fact]
     public void Null_averages_render_as_blank_cells()
     {
-        var bytes = ExcelTimingReportWriter.BuildWorkbook(NullAverageSummary());
+        var bytes = ExcelTimingReportWriter.BuildWorkbook(new TimingReport(NullAverageSummary(), []));
         using var workbook = new XLWorkbook(new MemoryStream(bytes));
         var overview = workbook.Worksheet("Overview");
         var monthly = workbook.Worksheet("Monthly");
@@ -83,11 +160,12 @@ public sealed class ExcelTimingReportWriterTests
         var path = Path.Combine(root.Path, "timing-report.xlsx");
         var writer = new ExcelTimingReportWriter(path);
 
-        await writer.WriteAsync(SampleSummary(), CancellationToken.None);
+        await writer.WriteAsync(SampleReport(), CancellationToken.None);
 
         Assert.True(File.Exists(path));
         using var workbook = new XLWorkbook(path);
         Assert.True(workbook.Worksheets.TryGetWorksheet("Overview", out _));
+        Assert.True(workbook.Worksheets.TryGetWorksheet("Runs", out _));
     }
 
     [Theory]
@@ -105,7 +183,7 @@ public sealed class ExcelTimingReportWriterTests
             (operation, _) => operation == stage ? new IOException("injected") : null);
         var writer = new ExcelTimingReportWriter(path, failing);
 
-        await Assert.ThrowsAsync<ReportingWriteException>(() => writer.WriteAsync(SampleSummary(), CancellationToken.None));
+        await Assert.ThrowsAsync<ReportingWriteException>(() => writer.WriteAsync(SampleReport(), CancellationToken.None));
 
         Assert.Equal("prior", await File.ReadAllTextAsync(path, CancellationToken.None));
         Assert.Empty(Directory.GetFiles(root.Path, "*.tmp"));
@@ -123,7 +201,7 @@ public sealed class ExcelTimingReportWriterTests
                 : null);
         var writer = new ExcelTimingReportWriter(path, failing);
 
-        var exception = await Assert.ThrowsAsync<ReportingWriteException>(() => writer.WriteAsync(SampleSummary(), CancellationToken.None));
+        var exception = await Assert.ThrowsAsync<ReportingWriteException>(() => writer.WriteAsync(SampleReport(), CancellationToken.None));
 
         Assert.Equal("timing-report.xlsx", exception.FileName);
         Assert.Contains("timing-report.xlsx", exception.Message, StringComparison.Ordinal);
@@ -135,7 +213,7 @@ public sealed class ExcelTimingReportWriterTests
     {
         using var root = new TempOutputRoot();
         var path = Path.Combine(root.Path, "timing-report.xlsx");
-        await new ExcelTimingReportWriter(path).WriteAsync(SampleSummary(), CancellationToken.None);
+        await new ExcelTimingReportWriter(path).WriteAsync(SampleReport(), CancellationToken.None);
 
         var bytes = await File.ReadAllBytesAsync(path, CancellationToken.None);
         var raw = System.Text.Encoding.Latin1.GetString(bytes);
@@ -172,7 +250,7 @@ public sealed class ExcelTimingReportWriterTests
     [Fact]
     public void Workbook_does_not_leak_paths_or_pat()
     {
-        using var workbook = Open(SampleSummary());
+        using var workbook = Open(SampleReport());
 
         Assert.DoesNotContain("/home", workbook.Properties.Author ?? string.Empty, StringComparison.Ordinal);
 
@@ -190,8 +268,29 @@ public sealed class ExcelTimingReportWriterTests
         }
     }
 
-    private static XLWorkbook Open(TimingSummary summary)
-        => new(new MemoryStream(ExcelTimingReportWriter.BuildWorkbook(summary)));
+    private static XLWorkbook Open(TimingReport report)
+        => new(new MemoryStream(ExcelTimingReportWriter.BuildWorkbook(report)));
+
+    private static BuildRun Run(
+        int id,
+        DateTimeOffset? queue,
+        DateTimeOffset? start = null,
+        DateTimeOffset? finish = null)
+        => TestRuns.Create(id: id, queueTime: queue, startTime: start, finishTime: finish);
+
+    private static TimingReport SampleReport()
+        => new(SampleSummary(), SampleRuns());
+
+    private static BuildRun[] SampleRuns()
+    {
+        var origin = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        return
+        [
+            Run(id: 1, queue: origin, start: origin.AddSeconds(10), finish: origin.AddSeconds(40)),
+            Run(id: 2, queue: null)
+        ];
+    }
 
     private static TimingSummary SampleSummary()
         => new(
