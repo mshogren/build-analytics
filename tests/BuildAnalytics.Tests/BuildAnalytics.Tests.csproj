@@ -16,5 +16,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\BuildAnalytics.Core\BuildAnalytics.Core.csproj" />
+    <ProjectReference Include="..\..\src\BuildAnalytics.App\BuildAnalytics.App.csproj" />
   </ItemGroup>
 </Project>
