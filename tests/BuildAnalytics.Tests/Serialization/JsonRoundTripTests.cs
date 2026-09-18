@@ -229,6 +229,36 @@ public sealed class JsonRoundTripTests
     }
 
     [Fact]
+    public void Manifest_Deserialization_IgnoresALegacyCursorField()
+    {
+        // ADR-108 removed the listing cursor; a manifest written by an older build still carries
+        // the key, and must keep loading. It must also never be written again.
+        var json = """
+        {
+          "schemaVersion": 1,
+          "fingerprint": "fp",
+          "status": "completed",
+          "cursor": "legacy-token",
+          "createdAt": "2024-01-01T00:00:00+00:00",
+          "updatedAt": "2024-01-02T00:00:00+00:00",
+          "lastError": null,
+          "failedRunIds": [1, 2]
+        }
+        """;
+
+        var manifest = JsonSerializer.Deserialize<Manifest>(json, BuildAnalyticsJson.Options);
+
+        Assert.NotNull(manifest);
+        Assert.Equal(Manifest.CurrentSchemaVersion, manifest!.SchemaVersion);
+        Assert.Equal("fp", manifest.Fingerprint);
+        Assert.Equal(ManifestStatus.Completed, manifest.Status);
+        Assert.Equal([1, 2], manifest.FailedRunIds);
+
+        var reserialized = JsonSerializer.Serialize(manifest, BuildAnalyticsJson.Options);
+        Assert.DoesNotContain("cursor", reserialized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Manifest_DefensivelyCopiesLists_AndEqualityIsStructural()
     {
         var failedRunIds = new List<int> { 1 };

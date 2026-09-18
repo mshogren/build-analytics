@@ -768,6 +768,26 @@ public sealed class RetrievalPipelineTests
 
     // ---- helpers ----
 
+    [Theory]
+    [InlineData(ManifestStatus.Paused)]
+    [InlineData(ManifestStatus.Failed)]
+    [InlineData(ManifestStatus.InProgress)]
+    public async Task SCRATCH_partial_root_pages_past_a_no_new_runs_page(ManifestStatus status)
+    {
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Seed(1);
+        manifests.Current = ManifestWith(status, clock, Fingerprint());
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "t1", TotalCount: 2));
+        source.Page("t1", new BuildPage([TestRuns.Create(id: 2)], null, TotalCount: 2));
+
+        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.Equal(2, result.PagesFetched);
+        Assert.Equal([null, "t1"], source.ListCalls.Select(call => call.Token));
+        Assert.Equal([2], runs.Writes.Select(run => run.Id));
+    }
+
     private static BuildRun DetailCompleteRun(int id, TimeProvider clock)
         => TestRuns.Create(
             id: id,
