@@ -40,8 +40,14 @@ Split infrastructure into its own assembly only if testability forces it.
   runs/<runId>__<name>/run.json # raw build payload; atomic write
 ```
 
-- `manifest.json` holds: query fingerprint, last committed page cursor, completed
-  run ids, timestamps, last error, and status (`pending|in_progress|completed|failed`).
+- `manifest.json` holds: `schemaVersion`, query fingerprint, last committed page
+  cursor, completed run ids, timestamps, last error, and status
+  (`pending|in_progress|completed|failed`).
+- `schemaVersion` is `1`. A newer on-disk version is a typed failure; the tool
+  refuses to proceed rather than guess.
+- Corrupted/truncated manifest: quarantine to `manifest.corrupt-<ts>.json`, scan
+  `runs/` for existing ids, restart list pagination from `cursor=null`, and
+  upsert idempotently. Only list calls are repeated, never detail calls.
 - Resume key = fingerprint of (org, project, time range, definition ids, outputRoot).
 - Advance the checkpoint **only after** the run file is durably written.
 - Checkpoint must never be ahead of the files.
@@ -52,7 +58,13 @@ Split infrastructure into its own assembly only if testability forces it.
 
 - Fetch build list once per page; consume list fields directly.
 - Per-run detail endpoint only when a required field is missing — opt-in, not default.
-- Handle `429`/`5xx` with bounded exponential backoff and `Retry-After`.
+- Retry only `408, 429, 500, 502, 503, 504` plus connection/timeout exceptions.
+  Max 4 attempts; exponential backoff 1→2→4→8s capped at 30s; jitter is seeded
+  and deterministic.
+- Honor `Retry-After`, but abort with a typed error if it exceeds 60s — resuming
+  later is cheaper than blocking, and the checkpoint preserves progress.
+- `maxRuns` is applied at **page boundaries only**; whole pages are committed and
+  retrieval never stops mid-page. It is a safety valve, so slight overshoot is fine.
 - Stream output; one page in memory at a time.
 - Wire `CancellationToken` from Ctrl+C through the whole pipeline.
 
@@ -104,28 +116,30 @@ inside pure logic; no shared mutable output root across tests.
 - PAT via `AZDO_PAT` only; never logged or written.
 - No local absolute paths in report output.
 
-## Open Questions (resolve before implementation)
+## Resolved Decisions (Q1–Q8)
 
-1. Retryable status set and whether `Retry-After` may exceed the backoff cap.
-2. Checkpoint rule on partial page when a run cap is applied.
-3. Null vs. negative policy when `finishTime < startTime`.
-4. Summary scope: seconds only, or percentiles/cost too.
-5. Output beyond Excel: CSV/JSON aggregates? Workbook charts? None yet.
-6. Acceptable CLI breakage level.
-7. Corrupted/truncated `manifest.json`: treat as fresh, or rebuild completed
-   ids by scanning `runs/`? Raw-files-primary makes this important.
-8. Manifest `schemaVersion` policy: older accepted; newer must fail typed.
+1. **Retry.** Retry `408, 429, 500, 502, 503, 504` and connection/timeout errors.
+   4 attempts, backoff 1→2→4→8s, cap 30s. `Retry-After` honored up to 60s; beyond
+   that, abort with a typed error and rely on resume.
+2. **Run cap.** `maxRuns` applies at page boundaries only; commit whole pages.
+3. **Skewed timestamps.** `finishTime < startTime` yields `null`, never negative.
+4. **Summary scope.** Seconds only — queue wait, run duration, total.
+5. **Output.** Excel only for now; CSV/JSON deferred behind `ITimingReportWriter`.
+6. **CLI.** Breaking rewrite accepted; no migration note required.
+7. **Corrupt manifest.** Quarantine and rebuild; replay list pages, upsert files.
+8. **Schema version.** `schemaVersion: 1`; newer on disk is a typed failure.
 
 ## Handoff
 
 | Role | Deliverable |
 |---|---|
-| architect | Confirm this layout; resolve open questions 1–3 |
 | implementer | Execute slices 1–3 test-first on a new branch |
 | tester | Own the test matrix; review the implementer's tests for gaps |
 | reviewer | Critique design against SOLID and over-engineering before merge |
 
-## Blocker
+## Environment
 
-`dotnet` SDK is not installed in this environment, so nothing can be compiled or
-run here. Needed before implementation starts.
+- .NET SDK 10.0.401 installed.
+- Baseline verified: `dotnet test build-analytics.slnx` → 15/15 pass on `da40a14`.
+- Existing code builds with 3 nullable warnings; reference-only.
+
