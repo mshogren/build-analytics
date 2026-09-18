@@ -84,8 +84,10 @@ public sealed class ExcelTimingReportWriterTests
                 Assert.DoesNotContain("COUNTIF", formula, StringComparison.OrdinalIgnoreCase);
 
                 // ADR-107: any conditional aggregation must carry the Visible criterion (the
-                // Runs count sums the Visible helper itself, so it also mentions it).
-                if (formula.Contains("SUMIF", StringComparison.OrdinalIgnoreCase))
+                // Runs count sums the Visible helper itself, so it also mentions it). AVERAGEIFS
+                // is included explicitly - a bare "SUMIF" substring check misses it entirely.
+                if (formula.Contains("SUMIFS", StringComparison.OrdinalIgnoreCase)
+                    || formula.Contains("AVERAGEIFS", StringComparison.OrdinalIgnoreCase))
                 {
                     Assert.Contains("RunsTable[Visible]", formula, StringComparison.Ordinal);
                 }
@@ -111,7 +113,21 @@ public sealed class ExcelTimingReportWriterTests
         Assert.Equal(
             "IFERROR(AVERAGEIFS(RunsTable[QueueWaitSeconds],RunsTable[Month],$A2,RunsTable[Visible],1,RunsTable[QueueWaitSeconds],\"<>\"),\"\")",
             sheet.Cell(2, 9).FormulaA1);
+        Assert.Equal(
+            "IFERROR(AVERAGEIFS(RunsTable[RunDurationSeconds],RunsTable[Month],$A2,RunsTable[Visible],1,RunsTable[RunDurationSeconds],\"<>\"),\"\")",
+            sheet.Cell(2, 10).FormulaA1);
+        Assert.Equal(
+            "IFERROR(AVERAGEIFS(RunsTable[TotalDurationSeconds],RunsTable[Month],$A2,RunsTable[Visible],1,RunsTable[TotalDurationSeconds],\"<>\"),\"\")",
+            sheet.Cell(2, 11).FormulaA1);
         Assert.Equal("0.00", sheet.Cell(2, 9).Style.NumberFormat.Format);
+
+        // Every Monthly aggregation that sums/averages a helper or duration must carry the
+        // Visible criterion; column 2 (the run count) sums the Visible helper itself.
+        for (var column = 3; column <= 11; column++)
+        {
+            Assert.Contains("RunsTable[Visible],1", sheet.Cell(2, column).FormulaA1, StringComparison.Ordinal);
+            Assert.Contains("RunsTable[Visible],1", sheet.Cell(3, column).FormulaA1, StringComparison.Ordinal);
+        }
 
         // (unknown) bucket: the Month helper is blank, so its criterion is blank text.
         Assert.Equal("IFERROR(SUMIFS(RunsTable[Visible],RunsTable[Month],\"\"),0)", sheet.Cell(3, 2).FormulaA1);
