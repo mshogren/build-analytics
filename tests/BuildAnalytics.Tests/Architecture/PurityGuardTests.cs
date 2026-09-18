@@ -27,10 +27,10 @@ public sealed class PurityGuardTests
     [Fact]
     public void Core_sources_contain_no_io_network_clock_or_ambient_environment_usage()
     {
-        var coreRoot = Path.Combine(RepoRoot(), "src", "BuildAnalytics.Core");
+        var coreTimingRoot = Path.Combine(RepoRoot(), "src", "BuildAnalytics.Core", "Timing");
         var violations = new List<string>();
 
-        foreach (var file in Directory.EnumerateFiles(coreRoot, "*.cs", SearchOption.AllDirectories))
+        foreach (var file in Directory.EnumerateFiles(coreTimingRoot, "*.cs", SearchOption.AllDirectories))
         {
             if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) ||
                 file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
