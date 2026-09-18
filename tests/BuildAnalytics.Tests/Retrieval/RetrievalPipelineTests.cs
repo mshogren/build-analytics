@@ -212,6 +212,9 @@ public sealed class RetrievalPipelineTests
 
         Assert.Equal(ManifestStatus.Paused, result.Status);
         Assert.Null(result.Cursor);
+        Assert.Equal(PauseReason.RunCapReached, result.Pause);
+        Assert.Equal(0, result.RemainingBudget);
+        Assert.Null(result.RetryAfter);
         Assert.Equal(ManifestStatus.Paused, manifests.Commits[^1].Status);
         Assert.NotEqual(ManifestStatus.Completed, manifests.Commits[^1].Status);
         Assert.Contains("RemainingBudget=0", manifests.Commits[^1].LastError, StringComparison.Ordinal);
@@ -226,6 +229,9 @@ public sealed class RetrievalPipelineTests
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
 
         Assert.Equal(ManifestStatus.Paused, result.Status);
+        Assert.Equal(PauseReason.RetryAfterTooLong, result.Pause);
+        Assert.Equal(TimeSpan.FromSeconds(120), result.RetryAfter);
+        Assert.Null(result.RemainingBudget);
         Assert.Contains("retry delay", manifests.Commits[^1].LastError, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("RetryAfter=00:02:00", manifests.Commits[^1].LastError, StringComparison.Ordinal);
     }

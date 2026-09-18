@@ -13,7 +13,10 @@ public sealed record RetrievalResult(
     bool ShortCircuited,
     int PagesFetched,
     int RunsWritten,
-    IReadOnlyList<int> FailedRunIds);
+    IReadOnlyList<int> FailedRunIds,
+    PauseReason? Pause,
+    TimeSpan? RetryAfter,
+    int? RemainingBudget);
 
 /// <summary>
 /// List -> detail-if-needed -> durable run write -> manifest checkpoint (ADR-4/66..71).
@@ -41,7 +44,10 @@ public sealed class RetrievalPipeline(
                 ShortCircuited: true,
                 PagesFetched: 0,
                 RunsWritten: 0,
-                existing.FailedRunIds);
+                existing.FailedRunIds,
+                Pause: null,
+                RetryAfter: null,
+                RemainingBudget: null);
         }
 
         var resolvedIds = await resolver.ResolveAsync(query, query.DefinitionNames, cancellationToken).ConfigureAwait(false);
@@ -184,10 +190,18 @@ public sealed class RetrievalPipeline(
             IReadOnlyList<int> failed,
             PipelinePausedException exception)
         {
-            // ADR-62: paused is resumable and never completed; the reason (and any
-            // RetryAfter/RemainingBudget) is surfaced in the persisted lastError.
+            // ADR-62: paused is resumable and never completed; the reason and typed
+            // RetryAfter/RemainingBudget are surfaced structurally and in lastError.
             await CommitAsync(ManifestStatus.Paused, pauseCursor, DescribePause(exception)).ConfigureAwait(false);
-            return Result(ManifestStatus.Paused, pauseCursor, pages, written, failed);
+            return Result(
+                ManifestStatus.Paused,
+                pauseCursor,
+                pages,
+                written,
+                failed,
+                exception.Reason,
+                exception.RetryAfter,
+                exception.RemainingBudget);
         }
 
         async Task CommitAsync(ManifestStatus status, string? cursor, string? lastError)
@@ -213,8 +227,11 @@ public sealed class RetrievalPipeline(
         string? cursor,
         int pagesFetched,
         int runsWritten,
-        IReadOnlyList<int> failedRunIds)
-        => new(status, cursor, ShortCircuited: false, pagesFetched, runsWritten, failedRunIds.ToArray());
+        IReadOnlyList<int> failedRunIds,
+        PauseReason? pause = null,
+        TimeSpan? retryAfter = null,
+        int? remainingBudget = null)
+        => new(status, cursor, ShortCircuited: false, pagesFetched, runsWritten, failedRunIds.ToArray(), pause, retryAfter, remainingBudget);
 
     private static bool IsRecoverable(Exception exception)
         => exception is RetryExhaustedException
