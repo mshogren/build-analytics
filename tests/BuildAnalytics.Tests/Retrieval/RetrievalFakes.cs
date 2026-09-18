@@ -145,6 +145,8 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
 
     public HashSet<int> StaleSchema { get; } = [];
 
+    public HashSet<int> ListedButAbsent { get; } = [];
+
     public Dictionary<int, Exception> WriteFailures { get; } = [];
 
     public void Seed(params int[] runIds)
@@ -193,5 +195,6 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
     }
 
     public Task<IReadOnlyList<int>> ListRunIdsAsync(CancellationToken cancellationToken)
-        => Task.FromResult<IReadOnlyList<int>>(_runs.Keys.OrderBy(id => id).ToArray());
+        => Task.FromResult<IReadOnlyList<int>>(
+            _runs.Keys.Concat(ListedButAbsent).Distinct().OrderBy(id => id).ToArray());
 }

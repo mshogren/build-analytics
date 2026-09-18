@@ -9,4 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="..\BuildAnalytics.Core\BuildAnalytics.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="ClosedXML" Version="0.104.2" />
+  </ItemGroup>
 </Project>

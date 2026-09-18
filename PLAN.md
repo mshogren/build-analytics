@@ -377,7 +377,11 @@ truncate.
     + request id from `x-ms-request-id`, else `x-vss-activity-id`, else
     `x-ms-correlation-request-id`. Never the body or the PAT.
 62. **`PipelinePausedException`** carries `Reason` plus optional `RetryAfter` /
-    `RemainingBudget`; the pipeline sets `Manifest.Status = Paused`.
+    `RemainingBudget`. The pipeline catches it, persists `Manifest.Status = Paused`,
+    and **returns** rather than rethrowing. The typed values are surfaced on
+    `RetrievalResult` as `PauseReason? Pause`, `TimeSpan? RetryAfter`, and
+    `int? RemainingBudget` (never parsed back out of `lastError` text), and the
+    CLI maps a non-`completed` status to a non-zero exit.
 63. **Stamping** always uses the injected clock; `FetchedAt` is never taken from
     the response.
 64. **Slice-3 tests** inject `HttpMessageHandler` + `TimeProvider` +
@@ -429,6 +433,33 @@ truncate.
 77. **Reporting failures.** A corrupt run file is skipped and counted; an
     unsupported run `schemaVersion` aborts; a listed id whose file is absent is
     skipped silently.
+78. **Rebuild skip.** For each listed run whose id already exists on disk, read
+    the existing file; if `DetailPolicyEvaluator.NeedsDetail(existing, policy)` is
+    false, skip both the detail fetch **and** the write. This avoids re-fetching on
+    a rebuild and, more importantly, prevents downgrading a detail-complete file
+    to a thin list row. A corrupt on-disk file is treated as missing.
+83. **Stale-schema run files are repaired, not fatal.** In the rebuild skip, an
+    on-disk run with an unsupported `schemaVersion` is treated as missing and
+    re-fetched/rewritten — run files are a cache and retrieval can self-heal. The
+    **manifest** schema mismatch stays fatal (ADR-8), and **reporting** still
+    aborts on an unsupported run schema (ADR-77) because it has no network and
+    cannot repair; skipping would yield a confidently incomplete report.
+79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
+    `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
+    `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
+    `--max-runs`, `--page-size`, `--api-version`, `--quiet`; `report` takes
+    `--output-root` (required), `--out`, `--quiet`. **No config file and no
+    `--config`** — flags plus `AZDO_PAT` only. The PAT is read through an
+    injectable credential seam, never a flag, never persisted.
+80. **Exit codes.** `0` success/help, `2` usage/parse error, `1` runtime or typed
+    failure (including `paused` and `failed`), `130` on Ctrl+C. `Parse` returns a
+    result; only `Main` maps it to an exit code — no `Environment.Exit` in parsing.
+81. **CLI defaults.** `--detail` defaults to `ListOnly`; API version `7.1` (an
+    identity input); page size 1000; report `--out` defaults to
+    `<outputRoot>/timing-report.xlsx`. ADO auth is HTTP Basic with an empty
+    username and the PAT as password.
+82. **Output channels.** Reports and usage go to stdout; progress and errors go
+    to stderr; `--quiet` suppresses non-error progress. No `--verbose` in v1.
 
 Accepted limitations (documented, no action): stale `.tmp` files are ignored by
 `ListRunIdsAsync` and are not garbage-collected at startup; `Manifest` list
