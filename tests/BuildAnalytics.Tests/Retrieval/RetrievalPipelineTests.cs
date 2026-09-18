@@ -282,6 +282,52 @@ public sealed class RetrievalPipelineTests
     }
 
     [Fact]
+    public async Task Completed_manifest_refresh_repairs_incomplete_on_disk_runs_instead_of_early_stopping()
+    {
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Put(TestRuns.Create(id: 1, definitionId: null, source: RunSource.List));
+        runs.Put(TestRuns.Create(id: 2, definitionId: null, source: RunSource.List));
+        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null), TestRuns.Create(id: 2, definitionId: null)], "t1", TotalCount: 3));
+        source.Page("t1", new BuildPage([TestRuns.Create(id: 3, definitionId: null)], null, TotalCount: 3));
+        source.Detail(1, DetailCompleteRun(1, clock));
+        source.Detail(2, DetailCompleteRun(2, clock));
+        source.Detail(3, DetailCompleteRun(3, clock));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        // Repairing incomplete on-disk rows is work: it must page on and rewrite them.
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.Equal(2, result.PagesFetched);
+        Assert.Equal(3, result.RunsWritten);
+        Assert.Equal([1, 2, 3], source.DetailCalls);
+        Assert.Equal([1, 2, 3], runs.Writes.Select(run => run.Id));
+    }
+
+    [Fact]
+    public async Task Completed_manifest_refresh_keeps_a_failure_that_persists_on_a_later_page()
+    {
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Put(DetailCompleteRun(1, clock));
+        runs.Put(DetailCompleteRun(8, clock));
+        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(DetailPolicy.FillMissing), failedRunIds: [7]);
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "t1", TotalCount: 3));
+        source.Page("t1", new BuildPage([TestRuns.Create(id: 7, definitionId: null)], "t2", TotalCount: 3));
+        source.Page("t2", new BuildPage([TestRuns.Create(id: 8)], null, TotalCount: 3));
+        source.DetailThrows(7, new RunNotFoundException(7));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        // The failure page is work, so paging continues; the unrecovered 404 stays recorded.
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.Equal(3, result.PagesFetched);
+        Assert.Equal([7], result.FailedRunIds);
+        Assert.Equal([7], source.DetailCalls);
+        Assert.Equal([null, "t1", "t2"], source.ListCalls.Select(call => call.Token));
+        Assert.Empty(runs.Writes);
+    }
+
+    [Fact]
     public async Task Completed_manifest_refresh_writes_new_runs_and_preserves_created_at()
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();

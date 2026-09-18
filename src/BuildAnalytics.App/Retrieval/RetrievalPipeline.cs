@@ -163,6 +163,7 @@ public sealed class RetrievalPipeline(
                 _progress.PageFetched(pagesFetched, page.Runs.Count);
 
                 var runsBeforePage = runsWritten;
+                var pageRecordedFailure = false;
 
                 foreach (var listed in page.Runs)
                 {
@@ -211,6 +212,7 @@ public sealed class RetrievalPipeline(
                                 handled++;
                             }
 
+                            pageRecordedFailure = true;
                             continue;
                         }
                     }
@@ -228,10 +230,12 @@ public sealed class RetrievalPipeline(
 
                 ReportPercent();
 
-                // ADR-97: with a descending list, a page that adds no new runs means every older
-                // page is already stored -> stop paging. Only a completed-root refresh may stop.
+                // ADR-97/100: with a descending list, a page that adds no new runs means every
+                // older page is already stored -> stop paging, but only for a completed-root
+                // refresh, only once the page recorded no failure, and only after every prior
+                // failure has been re-encountered (a failed run is not "already stored").
                 var pageAddedNewRuns = runsWritten > runsBeforePage;
-                if (canEarlyStop && page.Runs.Count > 0 && !pageAddedNewRuns && pendingFailed.Count == 0)
+                if (canEarlyStop && page.Runs.Count > 0 && !pageAddedNewRuns && !pageRecordedFailure && pendingFailed.Count == 0)
                 {
                     return await CompleteAsync().ConfigureAwait(false);
                 }
