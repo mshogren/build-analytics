@@ -161,6 +161,30 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task Report_write_failure_returns_1_with_sanitized_stderr()
+    {
+        using var root = new TempOutputRoot();
+        await WriteCompletedRootAsync(root.Path);
+
+        var blocked = Path.Combine(root.Path, "blocked.xlsx");
+        Directory.CreateDirectory(blocked);
+
+        var console = new CapturingConsole();
+        var app = new CliApplication(
+            new FakeCredentialProvider("secret"),
+            console,
+            new CountingHandlerFactory(() => throw new InvalidOperationException("no network")));
+
+        var code = await app.RunAsync(["report", "--output-root", root.Path, "--out", blocked], CancellationToken.None);
+
+        Assert.Equal(1, code);
+        var stderr = string.Join("\n", console.Stderr);
+        Assert.Contains("blocked.xlsx", stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain(root.Path, stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("/home", stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Usage_error_returns_2_and_writes_usage_to_stderr()
     {
         var console = new CapturingConsole();

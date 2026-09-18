@@ -484,6 +484,15 @@ truncate.
     single restart, because the first post-restart token is normally one already
     seen — persisting it would fail the restart immediately and remove the
     recovery path. Termination comes from the one-restart bound.
+94. **CLI top-level error handling.** After mapping `OperationCanceledException`
+    to `130`, `Program` catches every other exception, writes a sanitized message
+    to stderr (no stack trace, no PAT, no absolute path), and exits `1`. This
+    covers resolver/manifest failures raised before or around the pipeline, which
+    the pipeline's own catch-all cannot.
+95. **`ReportingWriteException`.** The report write path wraps IO failures in a
+    typed `Core.Errors.ReportingWriteException` whose message contains only the
+    file **name** and the reason — never the absolute destination path. The
+    ADR-94 CLI catch remains a second sanitization layer.
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,

@@ -167,6 +167,11 @@ public sealed class CliApplication
             _console.WriteError(exception.Message);
             return 1;
         }
+        catch (ReportingWriteException exception)
+        {
+            _console.WriteError(exception.Message);
+            return 1;
+        }
         catch (UnsupportedSchemaVersionException exception)
         {
             _console.WriteError(exception.Message);

@@ -1,5 +1,6 @@
 using BuildAnalytics.App.Reporting;
 using BuildAnalytics.App.Storage;
+using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Timing;
 using BuildAnalytics.Tests.Storage;
 using ClosedXML.Excel;
@@ -89,8 +90,11 @@ public sealed class ExcelTimingReportWriterTests
         Assert.True(workbook.Worksheets.TryGetWorksheet("Overview", out _));
     }
 
-    [Fact]
-    public async Task Failed_write_preserves_the_prior_report_and_leaves_no_temp_file()
+    [Theory]
+    [InlineData(FileOperation.WriteTemp)]
+    [InlineData(FileOperation.FlushToDisk)]
+    [InlineData(FileOperation.Rename)]
+    public async Task Write_stage_failure_preserves_the_prior_report_and_leaves_no_temp_file(FileOperation stage)
     {
         using var root = new TempOutputRoot();
         var path = Path.Combine(root.Path, "timing-report.xlsx");
@@ -98,13 +102,32 @@ public sealed class ExcelTimingReportWriterTests
 
         var failing = new RecordingFileOperations(
             new PhysicalFileOperations(),
-            (operation, _) => operation == FileOperation.Rename ? new IOException("injected") : null);
+            (operation, _) => operation == stage ? new IOException("injected") : null);
         var writer = new ExcelTimingReportWriter(path, failing);
 
-        await Assert.ThrowsAsync<IOException>(() => writer.WriteAsync(SampleSummary(), CancellationToken.None));
+        await Assert.ThrowsAsync<ReportingWriteException>(() => writer.WriteAsync(SampleSummary(), CancellationToken.None));
 
         Assert.Equal("prior", await File.ReadAllTextAsync(path, CancellationToken.None));
         Assert.Empty(Directory.GetFiles(root.Path, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task Write_failure_message_is_sanitized()
+    {
+        using var root = new TempOutputRoot();
+        var path = Path.Combine(root.Path, "timing-report.xlsx");
+        var failing = new RecordingFileOperations(
+            new PhysicalFileOperations(),
+            (operation, failedPath) => operation == FileOperation.WriteTemp
+                ? new IOException($"The process cannot access the file '{failedPath}'.")
+                : null);
+        var writer = new ExcelTimingReportWriter(path, failing);
+
+        var exception = await Assert.ThrowsAsync<ReportingWriteException>(() => writer.WriteAsync(SampleSummary(), CancellationToken.None));
+
+        Assert.Equal("timing-report.xlsx", exception.FileName);
+        Assert.Contains("timing-report.xlsx", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(root.Path, exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -117,38 +140,31 @@ public sealed class ExcelTimingReportWriterTests
         var bytes = await File.ReadAllBytesAsync(path, CancellationToken.None);
         var raw = System.Text.Encoding.Latin1.GetString(bytes);
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var leakShapes = new[] { "/home", "/tmp", "C:\\", root.Path, profile }
+            .Where(shape => !string.IsNullOrEmpty(shape))
+            .ToArray();
 
-        Assert.DoesNotContain("/home", raw, StringComparison.Ordinal);
         Assert.DoesNotContain("AZDO_PAT", raw, StringComparison.Ordinal);
-        Assert.DoesNotContain(root.Path, raw, StringComparison.Ordinal);
-        if (profile.Length > 0)
+        foreach (var shape in leakShapes)
         {
-            Assert.DoesNotContain(profile, raw, StringComparison.Ordinal);
+            Assert.DoesNotContain(shape, raw, StringComparison.Ordinal);
         }
 
         using var workbook = new XLWorkbook(new MemoryStream(bytes));
-        var properties = workbook.Properties;
-        foreach (var value in new[]
-                 {
-                     properties.Title,
-                     properties.Subject,
-                     properties.Comments,
-                     properties.Keywords,
-                     properties.Category,
-                     properties.Status,
-                     properties.Author,
-                     properties.LastModifiedBy,
-                     properties.Company,
-                     properties.Manager
-                 })
+
+        // Enumerate EVERY string document property, so future ClosedXML additions are covered.
+        var stringProperties = workbook.Properties
+            .GetType()
+            .GetProperties()
+            .Where(property => property.PropertyType == typeof(string));
+
+        foreach (var property in stringProperties)
         {
-            var text = value ?? string.Empty;
-            Assert.DoesNotContain("/home", text, StringComparison.Ordinal);
+            var text = (string?)property.GetValue(workbook.Properties) ?? string.Empty;
             Assert.DoesNotContain("AZDO_PAT", text, StringComparison.Ordinal);
-            Assert.DoesNotContain(root.Path, text, StringComparison.Ordinal);
-            if (profile.Length > 0)
+            foreach (var shape in leakShapes)
             {
-                Assert.DoesNotContain(profile, text, StringComparison.Ordinal);
+                Assert.DoesNotContain(shape, text, StringComparison.Ordinal);
             }
         }
     }

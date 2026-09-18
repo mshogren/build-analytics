@@ -20,3 +20,9 @@ catch (OperationCanceledException)
 {
     return 130;
 }
+catch (Exception exception)
+{
+    // ADR-94: no stack trace, no PAT, no absolute path - just a sanitized message.
+    Console.Error.WriteLine(CliErrorText.Describe(exception));
+    return 1;
+}

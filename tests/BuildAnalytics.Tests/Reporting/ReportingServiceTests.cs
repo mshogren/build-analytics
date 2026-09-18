@@ -7,6 +7,7 @@ using BuildAnalytics.Core.Ports;
 using BuildAnalytics.Tests.Doubles;
 using BuildAnalytics.Tests.Retrieval;
 using BuildAnalytics.Tests.Storage;
+using ClosedXML.Excel;
 using System.Text.Json;
 
 namespace BuildAnalytics.Tests.Reporting;
@@ -54,6 +55,36 @@ public sealed class ReportingServiceTests
         Assert.Empty(result.Summary.Months);
         Assert.NotNull(writer.Summary);
         Assert.Equal(result.Summary, writer.Summary);
+    }
+
+    [Fact]
+    public async Task Completed_zero_run_root_writes_a_valid_real_workbook()
+    {
+        using var root = new TempOutputRoot();
+        await File.WriteAllBytesAsync(
+            Path.Combine(root.Path, "manifest.json"),
+            JsonSerializer.SerializeToUtf8Bytes(ManifestWith(ManifestStatus.Completed), BuildAnalyticsJson.Options));
+
+        var outputPath = Path.Combine(root.Path, "report.xlsx");
+        using var manifestReader = FileManifestStore.OpenReadOnly(root.Path);
+        var service = new ReportingService(
+            manifestReader,
+            new FileRunStore(root.Path, new PhysicalFileOperations()),
+            new ExcelTimingReportWriter(outputPath));
+
+        var result = await service.GenerateAsync(CancellationToken.None);
+
+        Assert.Equal(0, result.RunsRead);
+        using var workbook = new XLWorkbook(outputPath);
+        var overview = workbook.Worksheet("Overview");
+        Assert.Equal(0, overview.Cell(2, 2).GetValue<int>());
+        Assert.True(overview.Cell(9, 2).IsEmpty());
+        Assert.True(overview.Cell(10, 2).IsEmpty());
+        Assert.True(overview.Cell(11, 2).IsEmpty());
+
+        var monthly = workbook.Worksheet("Monthly");
+        Assert.Equal("Month", monthly.Cell(1, 1).GetString());
+        Assert.True(monthly.Cell(2, 1).IsEmpty());
     }
 
     [Fact]

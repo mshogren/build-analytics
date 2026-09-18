@@ -1,4 +1,5 @@
 using BuildAnalytics.App.Storage;
+using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Ports;
 using BuildAnalytics.Core.Timing;
 using ClosedXML.Excel;
@@ -44,12 +45,39 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         _writer = new AtomicFileWriter(fileOperations ?? new PhysicalFileOperations());
     }
 
-    public Task WriteAsync(TimingSummary summary, CancellationToken cancellationToken)
+    public async Task WriteAsync(TimingSummary summary, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(summary);
 
         var bytes = BuildWorkbook(summary);
-        return _writer.WriteAsync(_destinationPath, bytes, cancellationToken);
+
+        try
+        {
+            await _writer.WriteAsync(_destinationPath, bytes, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // ADR-95: never leak the absolute destination/directory into the message.
+            throw new ReportingWriteException(Path.GetFileName(_destinationPath), SanitizeReason(exception.Message), exception);
+        }
+    }
+
+    private string SanitizeReason(string message)
+    {
+        var directory = Path.GetDirectoryName(_destinationPath);
+        var sanitized = message;
+
+        sanitized = sanitized.Replace(_destinationPath, Path.GetFileName(_destinationPath), StringComparison.Ordinal);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            sanitized = sanitized.Replace(directory, string.Empty, StringComparison.Ordinal);
+        }
+
+        return sanitized;
     }
 
     /// <summary>In-memory workbook bytes; exposed for tests that inspect the layout without a file.</summary>
