@@ -148,6 +148,11 @@ public static class ConfigLoader
                     return new ConfigLoadResult(null, "Config key 'maxRuns' must be an integer.");
                 }
 
+                if (parsed < 0)
+                {
+                    return new ConfigLoadResult(null, "Config key 'maxRuns' must be a non-negative integer.");
+                }
+
                 maxRuns = parsed;
             }
 

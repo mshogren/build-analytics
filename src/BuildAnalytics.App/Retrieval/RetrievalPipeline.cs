@@ -52,8 +52,11 @@ public sealed class RetrievalPipeline(
 
         var createdAt = existing?.CreatedAt ?? clock.GetUtcNow();
 
-        // ADR-97: a refresh retries the previously failed runs; a resume keeps them until re-listed.
-        var failedRunIds = isCompleted ? new List<int>() : new List<int>(existing?.FailedRunIds ?? []);
+        // ADR-97: keep the previously failed ids (they must be retried, and an id that is no
+        // longer listed must never be silently dropped). pendingFailed gates the refresh early
+        // stop until every prior failure has been re-encountered.
+        var failedRunIds = new List<int>(existing?.FailedRunIds ?? []);
+        var pendingFailed = new HashSet<int>(failedRunIds);
         var existingIdSet = new HashSet<int>(existingRunIds);
         var writtenThisPass = new HashSet<int>();
         var baseline = existingRunIds.Count;
@@ -162,11 +165,13 @@ public sealed class RetrievalPipeline(
                 _progress.PageFetched(pagesFetched, page.Runs.Count);
 
                 var runsBeforePage = runsWritten;
-                var failuresBeforePage = failedRunIds.Count;
 
                 foreach (var listed in page.Runs)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    // ADR-97: this prior failure has now been re-encountered (retried below).
+                    pendingFailed.Remove(listed.Id);
 
                     // ADR-89: a run written earlier in this pass is skipped with no re-read/re-fetch/rewrite.
                     if (writtenThisPass.Contains(listed.Id))
@@ -181,6 +186,8 @@ public sealed class RetrievalPipeline(
                         var onDisk = await TryReadExistingRunAsync(listed.Id, cancellationToken).ConfigureAwait(false);
                         if (onDisk is not null && !DetailPolicyEvaluator.NeedsDetail(onDisk, query.DetailPolicy))
                         {
+                            // A run that is now on disk is no longer a failure.
+                            failedRunIds.Remove(listed.Id);
                             continue;
                         }
                     }
@@ -209,6 +216,7 @@ public sealed class RetrievalPipeline(
                     runsWritten++;
                     handled++;
                     writtenThisPass.Add(run.Id);
+                    failedRunIds.Remove(run.Id);
                 }
 
                 ReportPercent();
@@ -216,8 +224,7 @@ public sealed class RetrievalPipeline(
                 // ADR-97: with a descending list, a page that adds no new runs means every older
                 // page is already stored -> stop paging. Only a completed-root refresh may stop.
                 var pageAddedNewRuns = runsWritten > runsBeforePage;
-                var pageRecordedFailures = failedRunIds.Count > failuresBeforePage;
-                if (canEarlyStop && page.Runs.Count > 0 && !pageAddedNewRuns && !pageRecordedFailures)
+                if (canEarlyStop && page.Runs.Count > 0 && !pageAddedNewRuns && pendingFailed.Count == 0)
                 {
                     return await CompleteAsync().ConfigureAwait(false);
                 }

@@ -228,7 +228,7 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Seed(1, 2);
-        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(), failedRunIds: [7]);
+        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint());
         source.Page(null, new BuildPage([TestRuns.Create(id: 1), TestRuns.Create(id: 2)], null, TotalCount: 2));
 
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
@@ -242,6 +242,43 @@ public sealed class RetrievalPipelineTests
         // The refresh re-lists from the top, not the stored cursor, and stops after one call.
         Assert.Equal([null], source.ListCalls.Select(call => call.Token));
         Assert.Equal([ManifestStatus.InProgress, ManifestStatus.Completed], manifests.Commits.Select(commit => commit.Status));
+    }
+
+    [Fact]
+    public async Task Completed_manifest_refresh_does_not_early_stop_before_retrying_a_failed_run()
+    {
+        // A prior failure on a later page must be re-encountered before the early stop, even
+        // when the newest page is fully stored (reviewer repro).
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Seed(1);
+        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(), failedRunIds: [7]);
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "next", TotalCount: 2));
+        source.Page("next", new BuildPage([TestRuns.Create(id: 7)], null, TotalCount: 2));
+
+        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.False(result.ShortCircuited);
+        Assert.Equal(2, result.PagesFetched);
+        Assert.Equal(1, result.RunsWritten);
+        Assert.Empty(result.FailedRunIds);
+        Assert.Equal([7], runs.Writes.Select(run => run.Id));
+    }
+
+    [Fact]
+    public async Task Completed_manifest_refresh_preserves_a_failed_id_that_is_no_longer_listed()
+    {
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Seed(1);
+        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(), failedRunIds: [7]);
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], null, TotalCount: 1));
+
+        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.True(result.ShortCircuited);
+        Assert.Equal([7], result.FailedRunIds);
+        Assert.Equal([7], manifests.Commits[^1].FailedRunIds);
     }
 
     [Fact]

@@ -123,6 +123,17 @@ public sealed class ConfigLoaderTests
     }
 
     [Fact]
+    public void Negative_maxRuns_is_a_usage_error()
+    {
+        var path = WriteTempConfig("""{ "maxRuns": -1 }""");
+
+        var result = ConfigLoader.Load(["retrieve", "--config", path]);
+
+        Assert.NotNull(result.Error);
+        Assert.Contains("maxRuns", result.Error!, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Inline_equals_form_is_supported()
     {
         var path = WriteTempConfig("""{ "org": "o" }""");
