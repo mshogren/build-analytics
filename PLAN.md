@@ -560,6 +560,14 @@ truncate.
     to be inserted. The workbook is set to full-calculate on load, and tests
     assert the formula/table structure and hidden helpers rather than computed
     values (Excel computes those on open).
+108. **No cursor.** The manifest no longer carries a listing cursor. Resume and
+    refresh are the same path: re-list from the start and skip runs already
+    durable on disk (ADR-78), early-stopping only for a `completed` root. A
+    partial list is never trusted, so an interrupted run cannot silently skip the
+    pages it had already listed. The durable progress marker is the set of run
+    files; `FailedRunIds` are still persisted, and the single-phase list->write
+    flow is retained (the list payload already contains every field the report
+    needs, so no per-build detail phase is required).
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
