@@ -13,8 +13,9 @@ namespace BuildAnalytics.App.AzureDevOps;
 /// fallback, and client-side definition-name resolution. Holds the per-session run budget;
 /// the pipeline owns paging, repeated-token detection, and restart.
 /// </summary>
-public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver
+public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposable
 {
+    private readonly HttpClient _httpClient;
     private readonly AdoRequestExecutor _executor;
     private readonly AdoBuildSourceOptions _options;
     private readonly TimeProvider _timeProvider;
@@ -30,10 +31,14 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver
         ArgumentNullException.ThrowIfNull(httpMessageHandler);
         ArgumentNullException.ThrowIfNull(timeProvider);
 
-        _executor = new AdoRequestExecutor(new HttpClient(httpMessageHandler, disposeHandler: false), delayScheduler, timeProvider);
+        _httpClient = new HttpClient(httpMessageHandler, disposeHandler: false);
+        _executor = new AdoRequestExecutor(_httpClient, delayScheduler, timeProvider);
         _timeProvider = timeProvider;
         _options = options ?? new AdoBuildSourceOptions();
     }
+
+    /// <summary>Disposes the internal <see cref="HttpClient"/>; the injected handler stays caller-owned.</summary>
+    public void Dispose() => _httpClient.Dispose();
 
     public async Task<BuildPage> ListAsync(BuildQuery query, string? continuationToken, CancellationToken cancellationToken)
     {
