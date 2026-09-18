@@ -32,7 +32,8 @@ BuildAnalytics.Tests  # xUnit
 
 Core references no IO: no `File`/`Directory`, no `HttpClient`, no `ClosedXML`,
 no `DateTime.Now`/`UtcNow`, no `Random`/`Guid`/`Environment`. Enforced by an
-architecture test.
+architecture test scoped to the pure timing types (`TimingCalculator`,
+`MonthlyTimingRollup`) — Core may host the `TimeProvider`/delay seam.
 
 Ports defined in Core:
 
@@ -70,21 +71,30 @@ status, result, reason, poolId, poolName, sourceBranch
 All of these are present in the build-list response, so the detail endpoint is a
 fallback. `source` + `fetchedWith` make an incomplete file detectable on resume.
 
+The schema is **flat**. ADO fields outside this contract (nested `definition`/
+`queue`, `requestedFor`, `requestedBy`, `sourceVersion`, `tags`, `uri`,
+`webUrl`, `keepForever`) are dropped entirely, not stored optionally.
+
 The legacy `runs.json` artifact is **dropped**; nothing reads it.
 
 ## Fingerprint
 
-Identity = fingerprint of the raw query inputs:
+Identity is the **effective query**:
 
 ```
 org, project, minTime, maxTime,
-definitionIds (as given), definitionNames (as given),
-resolvedDefinitionIds (sorted), detailPolicy, apiVersion
+resolvedDefinitionIds (sorted, distinct), detailPolicy, apiVersion
 ```
 
-Excludes `outputRoot` (a location, not query identity) and `maxRuns` (a runtime
-budget). A mismatch against a non-empty `runs/` is a typed error telling the
-operator to use a new output root.
+Raw `definitionIds`/`definitionNames` are stored in the manifest for human
+reference but are **not** identity inputs: two invocations that resolve to the
+same id set describe the same data and should resume each other.
+
+Excluded from identity: `outputRoot` (a location), `maxRuns` (a runtime budget),
+input ordering, and null-vs-empty collections (canonicalized to empty).
+
+A mismatch against a non-empty `runs/` is a typed error telling the operator to
+use a new output root.
 
 ## Manifest & Durability
 
@@ -128,7 +138,9 @@ truncate.
   the active `detailPolicy` is part of the fingerprint.
 - Retry only `408, 429, 500, 502, 503, 504` plus connection/timeout exceptions.
   **5 attempts (4 retries), waits 1, 2, 4, 8s.** Parse `Retry-After` in both
-  delta-seconds and HTTP-date form. A `Retry-After` over 60s aborts to `paused`.
+  delta-seconds and HTTP-date form. A `Retry-After` over 60s persists status
+  `paused` **and** exits non-zero with a typed, actionable error telling the
+  operator to rerun.
 - A detail-fetch throttle aborts the pipeline to `paused`, not just that run.
 - `maxRuns` is a runtime budget applied by trimming the page budget,
   `$top = min(pageSize, remaining)`, so overshoot is bounded. It leaves status
@@ -149,7 +161,7 @@ truncate.
 ## Resolved Decisions
 
 1. **Retry.** As in Retrieval Rules — 5 attempts, waits 1/2/4/8s; `Retry-After`
-   honored up to 60s, then abort to `paused`.
+   honored up to 60s, then persist `paused` and exit non-zero with a typed error.
 2. **Run cap.** `maxRuns` trims the page budget; whole pages are committed; the
    run is left `paused`, never `completed`.
 3. **Skewed timestamps.** Any strictly reversed endpoint pair yields `null`,
@@ -173,6 +185,10 @@ truncate.
     fallback. Absent `QueueTime` goes to `(unknown)`.
 12. **Monthly metrics.** `RunCount`, `Succeeded`, `Failed`, `PartiallySucceeded`,
     `Canceled`, `NotStarted`, `WaitOverFiveMin`, and the three averages.
+13. **Fingerprint identity.** The effective query only (org, project, time range,
+    resolved definition ids, detail policy, api version). Raw ids/names are
+    informational. Null and empty collections are the same identity.
+14. **Run schema is flat.** Fields outside the contract are dropped entirely.
 
 ## Design Review Disposition (F1–F17)
 
