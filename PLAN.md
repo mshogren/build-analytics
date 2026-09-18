@@ -629,13 +629,15 @@ All findings accepted and folded into the sections above.
 
 ## Test Matrix (high value)
 
-**A — resumable retrieval.** Sequential multi-page token forwarding; resume from
-manifest cursor; crash-before-commit replay without duplicates; repeated token
-bounded; empty first page idempotent; **no per-run overfetch** (0 detail calls
-when the list item satisfies the contract); Ctrl+C cancellation; one page in memory.
+**A — resumable retrieval.** Sequential multi-page token forwarding; resume
+re-lists from the beginning and skips what is on disk; crash-before-commit replay
+without duplicates; repeated token bounded; empty first page idempotent; **no
+per-run overfetch** (0 detail calls when the list item satisfies the contract);
+Ctrl+C cancellation; one page in memory.
 
-**B — manifest + raw files.** Atomic `run.json` write; checkpoint advanced only
-after durable file write; checkpoint never ahead of files; by run id; durability across reopen; fingerprint scoping; status machine;
+**B — manifest + raw files.** Atomic `run.json` write; the durable run files are
+the progress marker (no cursor, ADR-108); replay is idempotent; durability across
+reopen; fingerprint scoping; status machine;
 single-writer lock; no credentials or absolute paths in artifacts.
 
 **C — retry/backoff.** Deterministic waits 1/2/4/8s; both `Retry-After` forms;
