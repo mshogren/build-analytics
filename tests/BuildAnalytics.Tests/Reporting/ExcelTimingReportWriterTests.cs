@@ -10,18 +10,31 @@ namespace BuildAnalytics.Tests.Reporting;
 
 public sealed class ExcelTimingReportWriterTests
 {
+    private const string MonthlyNote =
+        "Monthly totals always cover the full run set (they do not follow the Runs filter). Use the Pivot sheet to slice interactively.";
+
+    private static readonly string[] RunsTableHeaders =
+    [
+        "RunId", "DefinitionId", "DefinitionName", "BuildNumber",
+        "QueueTime", "StartTime", "FinishTime", "Status", "Result", "Reason",
+        "PoolId", "PoolName", "SourceBranch",
+        "QueueWaitSeconds", "RunDurationSeconds", "TotalDurationSeconds",
+        "IsSucceeded", "IsFailed", "IsPartiallySucceeded", "IsCanceled", "IsNotStarted", "WaitOver5Min", "Month"
+    ];
+
     [Fact]
-    public void Workbook_has_overview_monthly_and_runs_sheets()
+    public void Workbook_has_overview_monthly_runs_and_pivot_sheets()
     {
         using var workbook = Open(SampleReport());
 
         Assert.True(workbook.Worksheets.TryGetWorksheet("Overview", out _));
         Assert.True(workbook.Worksheets.TryGetWorksheet("Monthly", out _));
         Assert.True(workbook.Worksheets.TryGetWorksheet("Runs", out _));
+        Assert.True(workbook.Worksheets.TryGetWorksheet("Pivot", out _));
     }
 
     [Fact]
-    public void Overview_lists_metrics_in_order_with_values()
+    public void Overview_lists_metrics_with_filter_aware_subtotal_formulas()
     {
         using var workbook = Open(SampleReport());
         var sheet = workbook.Worksheet("Overview");
@@ -30,11 +43,8 @@ public sealed class ExcelTimingReportWriterTests
         Assert.Equal("Value", sheet.Cell(1, 2).GetString());
 
         Assert.Equal("Runs", sheet.Cell(2, 1).GetString());
-        Assert.Equal(10, sheet.Cell(2, 2).GetValue<int>());
         Assert.Equal("Succeeded", sheet.Cell(3, 1).GetString());
-        Assert.Equal(6, sheet.Cell(3, 2).GetValue<int>());
         Assert.Equal("Failed", sheet.Cell(4, 1).GetString());
-        Assert.Equal(2, sheet.Cell(4, 2).GetValue<int>());
         Assert.Equal("Partially Succeeded", sheet.Cell(5, 1).GetString());
         Assert.Equal("Canceled", sheet.Cell(6, 1).GetString());
         Assert.Equal("Not Started", sheet.Cell(7, 1).GetString());
@@ -43,8 +53,38 @@ public sealed class ExcelTimingReportWriterTests
         Assert.Equal("Avg Duration (sec)", sheet.Cell(10, 1).GetString());
         Assert.Equal("Avg Total (sec)", sheet.Cell(11, 1).GetString());
 
-        Assert.Equal(12.35, sheet.Cell(9, 2).GetDouble(), 2);
+        Assert.Equal("IFERROR(SUBTOTAL(103,RunsTable[RunId]),0)", sheet.Cell(2, 2).FormulaA1);
+        Assert.Equal("SUBTOTAL(109,RunsTable[IsSucceeded])", sheet.Cell(3, 2).FormulaA1);
+        Assert.Equal("SUBTOTAL(109,RunsTable[IsFailed])", sheet.Cell(4, 2).FormulaA1);
+        Assert.Equal("SUBTOTAL(109,RunsTable[IsPartiallySucceeded])", sheet.Cell(5, 2).FormulaA1);
+        Assert.Equal("SUBTOTAL(109,RunsTable[IsCanceled])", sheet.Cell(6, 2).FormulaA1);
+        Assert.Equal("SUBTOTAL(109,RunsTable[IsNotStarted])", sheet.Cell(7, 2).FormulaA1);
+        Assert.Equal("SUBTOTAL(109,RunsTable[WaitOver5Min])", sheet.Cell(8, 2).FormulaA1);
+        Assert.Equal("IFERROR(SUBTOTAL(101,RunsTable[QueueWaitSeconds]),\"\")", sheet.Cell(9, 2).FormulaA1);
+        Assert.Equal("IFERROR(SUBTOTAL(101,RunsTable[RunDurationSeconds]),\"\")", sheet.Cell(10, 2).FormulaA1);
+        Assert.Equal("IFERROR(SUBTOTAL(101,RunsTable[TotalDurationSeconds]),\"\")", sheet.Cell(11, 2).FormulaA1);
+
         Assert.Equal("0.00", sheet.Cell(9, 2).Style.NumberFormat.Format);
+    }
+
+    [Fact]
+    public void Overview_uses_no_countifs_or_sumifs_anywhere()
+    {
+        using var workbook = Open(SampleReport());
+
+        foreach (var sheet in workbook.Worksheets)
+        {
+            foreach (var cell in sheet.CellsUsed())
+            {
+                if (!cell.HasFormula)
+                {
+                    continue;
+                }
+
+                Assert.DoesNotContain("COUNTIF", cell.FormulaA1, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("SUMIF", cell.FormulaA1, StringComparison.OrdinalIgnoreCase);
+            }
+        }
     }
 
     [Fact]
@@ -62,22 +102,32 @@ public sealed class ExcelTimingReportWriterTests
     }
 
     [Fact]
-    public void Runs_sheet_has_the_exact_header()
+    public void Monthly_carries_the_static_totals_note_two_rows_below_the_last_data_row()
+    {
+        using var workbook = Open(SampleReport());
+        var sheet = workbook.Worksheet("Monthly");
+
+        // Sample has 2 month rows (2..3); the note sits at row 5.
+        Assert.Equal(MonthlyNote, sheet.Cell(5, 1).GetString());
+    }
+
+    [Fact]
+    public void Runs_sheet_is_a_table_with_expected_columns_and_hidden_helpers()
     {
         using var workbook = Open(SampleReport());
         var sheet = workbook.Worksheet("Runs");
 
-        string[] expected =
-        [
-            "RunId", "DefinitionId", "DefinitionName", "BuildNumber",
-            "QueueTime", "StartTime", "FinishTime", "Status", "Result", "Reason",
-            "PoolId", "PoolName", "SourceBranch",
-            "QueueWaitSeconds", "RunDurationSeconds", "TotalDurationSeconds"
-        ];
+        var table = sheet.Table("RunsTable");
+        Assert.Equal(RunsTableHeaders, table.Fields.Select(field => field.Name).ToArray());
 
-        for (var column = 0; column < expected.Length; column++)
+        for (var column = 1; column <= 16; column++)
         {
-            Assert.Equal(expected[column], sheet.Cell(1, column + 1).GetString());
+            Assert.False(sheet.Column(column).IsHidden, $"raw column {column} must stay visible");
+        }
+
+        for (var column = 17; column <= RunsTableHeaders.Length; column++)
+        {
+            Assert.True(sheet.Column(column).IsHidden, $"helper column {column} must be hidden");
         }
     }
 
@@ -123,18 +173,30 @@ public sealed class ExcelTimingReportWriterTests
     }
 
     [Fact]
-    public void Runs_sheet_blanks_missing_optional_values()
+    public void Runs_sheet_helper_columns_mirror_the_summary_counts()
     {
-        var run = Run(id: 7, queue: null);
-        var report = new TimingReport(MonthlyTimingRollup.Summarize([run]), [run]);
+        var origin = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        BuildRun[] runs =
+        [
+            TestRuns.Create(id: 1, result: "succeeded", status: "completed", queueTime: origin, startTime: origin.AddSeconds(1), finishTime: origin.AddSeconds(2)),
+            TestRuns.Create(id: 2, result: "failed", status: "completed", queueTime: origin.AddSeconds(1), startTime: origin.AddSeconds(401), finishTime: origin.AddSeconds(402)),
+            TestRuns.Create(id: 3, result: "partiallySucceeded", status: "completed", queueTime: origin.AddSeconds(2)),
+            TestRuns.Create(id: 4, result: "canceled", status: "completed", queueTime: origin.AddSeconds(3)),
+            TestRuns.Create(id: 5, result: "succeeded", status: "notStarted", queueTime: origin.AddSeconds(4)),
+        ];
+        var report = new TimingReport(MonthlyTimingRollup.Summarize(runs), runs);
 
         using var workbook = Open(report);
         var sheet = workbook.Worksheet("Runs");
 
-        Assert.Equal(7, sheet.Cell(2, 1).GetValue<int>());
-        Assert.True(sheet.Cell(2, 5).IsEmpty());   // QueueTime
-        Assert.True(sheet.Cell(2, 14).IsEmpty());  // QueueWaitSeconds
-        Assert.True(sheet.Cell(2, 16).IsEmpty());  // TotalDurationSeconds
+        Assert.Equal(1, sheet.Cell(2, 17).GetValue<int>());  // succeeded
+        Assert.Equal(0, sheet.Cell(3, 17).GetValue<int>());  // failed row
+        Assert.Equal(1, sheet.Cell(3, 18).GetValue<int>());  // IsFailed
+        Assert.Equal(1, sheet.Cell(4, 19).GetValue<int>());  // IsPartiallySucceeded
+        Assert.Equal(1, sheet.Cell(5, 20).GetValue<int>());  // IsCanceled
+        Assert.Equal(1, sheet.Cell(6, 21).GetValue<int>());  // IsNotStarted
+        Assert.Equal(1, sheet.Cell(3, 22).GetValue<int>());  // WaitOver5Min (400 > 300)
+        Assert.Equal("2024-01", sheet.Cell(2, 23).GetString());
     }
 
     [Fact]
@@ -160,16 +222,76 @@ public sealed class ExcelTimingReportWriterTests
     }
 
     [Fact]
-    public void Null_averages_render_as_blank_cells()
+    public void Runs_sheet_blanks_missing_optional_values()
+    {
+        var run = Run(id: 7, queue: null);
+        var report = new TimingReport(MonthlyTimingRollup.Summarize([run]), [run]);
+
+        using var workbook = Open(report);
+        var sheet = workbook.Worksheet("Runs");
+
+        Assert.Equal(7, sheet.Cell(2, 1).GetValue<int>());
+        Assert.True(sheet.Cell(2, 5).IsEmpty());   // QueueTime
+        Assert.True(sheet.Cell(2, 14).IsEmpty());  // QueueWaitSeconds
+        Assert.True(sheet.Cell(2, 16).IsEmpty());  // TotalDurationSeconds
+        Assert.True(sheet.Cell(2, 23).IsEmpty());  // Month helper blank when null
+    }
+
+    [Fact]
+    public void Pivot_sheet_sources_the_runs_table()
+    {
+        using var workbook = Open(SampleReport());
+        var sheet = workbook.Worksheet("Pivot");
+        var pivot = sheet.PivotTables.First();
+
+        Assert.Equal("RunsPivot", pivot.Name);
+        Assert.True(pivot.RowLabels.Contains("Month"));
+        Assert.Contains(pivot.Values, value => value.SourceName == "RunId" && value.SummaryFormula == XLPivotSummary.Count);
+        Assert.Contains(pivot.Values, value => value.SourceName == "IsSucceeded" && value.SummaryFormula == XLPivotSummary.Sum);
+        Assert.Contains(pivot.Values, value => value.SourceName == "IsFailed" && value.SummaryFormula == XLPivotSummary.Sum);
+        Assert.Contains(pivot.Values, value => value.SourceName == "WaitOver5Min" && value.SummaryFormula == XLPivotSummary.Sum);
+        Assert.Contains(pivot.Values, value => value.SourceName == "QueueWaitSeconds" && value.SummaryFormula == XLPivotSummary.Average);
+        Assert.Contains("Month", pivot.PivotCache.FieldNames);
+        Assert.Contains("RunId", pivot.PivotCache.FieldNames);
+    }
+
+    [Fact]
+    public void Zero_run_workbook_has_a_header_only_runs_table_and_pivot()
+    {
+        var report = new TimingReport(MonthlyTimingRollup.Summarize([]), []);
+
+        using var workbook = Open(report);
+        var sheet = workbook.Worksheet("Runs");
+        var table = sheet.Table("RunsTable");
+
+        Assert.Equal(RunsTableHeaders, table.Fields.Select(field => field.Name).ToArray());
+        Assert.True(sheet.Cell(2, 1).IsEmpty());
+        Assert.True(workbook.Worksheet("Pivot").PivotTables.First().RowLabels.Contains("Month"));
+    }
+
+    [Fact]
+    public async Task Workbook_reopens_after_saving()
+    {
+        using var root = new TempOutputRoot();
+        var path = Path.Combine(root.Path, "timing-report.xlsx");
+
+        await new ExcelTimingReportWriter(path).WriteAsync(SampleReport(), CancellationToken.None);
+
+        using var workbook = new XLWorkbook(path);
+        Assert.True(workbook.FullCalculationOnLoad);
+        Assert.True(workbook.Worksheets.TryGetWorksheet("Runs", out _));
+        Assert.Equal("RunsTable", workbook.Worksheet("Runs").Table("RunsTable").Name);
+        Assert.Equal("RunsPivot", workbook.Worksheet("Pivot").PivotTables.First().Name);
+        Assert.Equal("IFERROR(SUBTOTAL(103,RunsTable[RunId]),0)", workbook.Worksheet("Overview").Cell("B2").FormulaA1);
+    }
+
+    [Fact]
+    public void Null_monthly_averages_render_as_blank_cells()
     {
         var bytes = ExcelTimingReportWriter.BuildWorkbook(new TimingReport(NullAverageSummary(), []));
         using var workbook = new XLWorkbook(new MemoryStream(bytes));
-        var overview = workbook.Worksheet("Overview");
         var monthly = workbook.Worksheet("Monthly");
 
-        Assert.True(overview.Cell(9, 2).IsEmpty());
-        Assert.True(overview.Cell(10, 2).IsEmpty());
-        Assert.True(overview.Cell(11, 2).IsEmpty());
         Assert.True(monthly.Cell(2, 9).IsEmpty());
         Assert.True(monthly.Cell(2, 10).IsEmpty());
         Assert.True(monthly.Cell(2, 11).IsEmpty());

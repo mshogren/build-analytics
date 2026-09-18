@@ -77,19 +77,24 @@ public sealed class ReportingServiceTests
         Assert.Equal(0, result.RunsRead);
         using var workbook = new XLWorkbook(outputPath);
         var overview = workbook.Worksheet("Overview");
-        Assert.Equal(0, overview.Cell(2, 2).GetValue<int>());
-        Assert.True(overview.Cell(9, 2).IsEmpty());
-        Assert.True(overview.Cell(10, 2).IsEmpty());
-        Assert.True(overview.Cell(11, 2).IsEmpty());
+        // ADR-107: Overview is formula-driven now; assert structure, not computed values.
+        Assert.Equal("IFERROR(SUBTOTAL(103,RunsTable[RunId]),0)", overview.Cell(2, 2).FormulaA1);
+        Assert.Equal("IFERROR(SUBTOTAL(101,RunsTable[QueueWaitSeconds]),\"\")", overview.Cell(9, 2).FormulaA1);
+        Assert.Equal("IFERROR(SUBTOTAL(101,RunsTable[RunDurationSeconds]),\"\")", overview.Cell(10, 2).FormulaA1);
+        Assert.Equal("IFERROR(SUBTOTAL(101,RunsTable[TotalDurationSeconds]),\"\")", overview.Cell(11, 2).FormulaA1);
 
         var monthly = workbook.Worksheet("Monthly");
         Assert.Equal("Month", monthly.Cell(1, 1).GetString());
         Assert.True(monthly.Cell(2, 1).IsEmpty());
 
-        var runs = workbook.Worksheet("Runs");
-        Assert.Equal("RunId", runs.Cell(1, 1).GetString());
-        Assert.Equal("TotalDurationSeconds", runs.Cell(1, 16).GetString());
-        Assert.True(runs.Cell(2, 1).IsEmpty());
+        var runsSheet = workbook.Worksheet("Runs");
+        Assert.Equal("RunId", runsSheet.Cell(1, 1).GetString());
+        Assert.Equal("TotalDurationSeconds", runsSheet.Cell(1, 16).GetString());
+        Assert.Equal("Month", runsSheet.Cell(1, 23).GetString());
+        Assert.True(runsSheet.Cell(2, 1).IsEmpty());
+        // ClosedXML supports header-only ListObjects, so even a zero-run root gets a real table.
+        Assert.Equal("RunsTable", runsSheet.Table("RunsTable").Name);
+        Assert.True(workbook.Worksheet("Pivot").PivotTables.First().RowLabels.Contains("Month"));
     }
 
     [Fact]

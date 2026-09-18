@@ -1,3 +1,4 @@
+using System.Globalization;
 using BuildAnalytics.App.Storage;
 using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
@@ -8,9 +9,13 @@ using ClosedXML.Excel;
 namespace BuildAnalytics.App.Reporting;
 
 /// <summary>
-/// Excel adapter for the timing report (ADR-76/105). Owns its destination and writes atomically
+/// Excel adapter for the timing report (ADR-76/105/107). Owns its destination and writes atomically
 /// (temp -> flush -> rename) through <see cref="AtomicFileWriter"/>, so a failed write never
 /// truncates a prior report and leaves no staged temp file behind.
+///
+/// The raw <c>Runs</c> sheet is an Excel Table; <c>Overview</c> uses filter-aware
+/// <c>SUBTOTAL(101-111)</c> formulas over it (never COUNTIFS/SUMIFS), <c>Monthly</c> is static,
+/// and a <c>Pivot</c> sheet slices the same table.
 /// </summary>
 public sealed class ExcelTimingReportWriter : ITimingReportWriter
 {
@@ -19,8 +24,14 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
     private const string OverviewSheet = "Overview";
     private const string MonthlySheet = "Monthly";
     private const string RunsSheet = "Runs";
+    private const string PivotSheet = "Pivot";
+    private const string RunsTableName = "RunsTable";
+    private const string PivotTableName = "RunsPivot";
     private const string SecondsFormat = "0.00";
     private const string TimestampFormat = "yyyy-mm-dd hh:mm:ss";
+
+    private const string MonthlyNote =
+        "Monthly totals always cover the full run set (they do not follow the Runs filter). Use the Pivot sheet to slice interactively.";
 
     private static readonly string[] MonthlyHeaders =
     [
@@ -56,6 +67,20 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         "RunDurationSeconds",
         "TotalDurationSeconds"
     ];
+
+    /// <summary>Hidden helper columns appended after <see cref="RunsHeaders"/>; names feed structured references.</summary>
+    private static readonly string[] HelperHeaders =
+    [
+        "IsSucceeded",
+        "IsFailed",
+        "IsPartiallySucceeded",
+        "IsCanceled",
+        "IsNotStarted",
+        "WaitOver5Min",
+        "Month"
+    ];
+
+    private static readonly string[] RunsTableHeaders = [.. RunsHeaders, .. HelperHeaders];
 
     private readonly string _destinationPath;
     private readonly AtomicFileWriter _writer;
@@ -109,32 +134,44 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         ArgumentNullException.ThrowIfNull(report);
 
         using var workbook = new XLWorkbook();
-        BuildOverview(workbook, report.Summary.Overall);
+
+        // ADR-107: Excel evaluates the SUBTOTAL formulas on open.
+        workbook.FullCalculationOnLoad = true;
+
+        BuildOverview(workbook);
+
+        // ADR-105: Monthly stays static (from the summary).
         BuildMonthly(workbook, report.Summary.Months);
-        BuildRuns(workbook, report.Runs);
+
+        var runsTable = BuildRuns(workbook, report.Runs);
+        BuildPivot(workbook, runsTable);
 
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
         return stream.ToArray();
     }
 
-    private static void BuildOverview(XLWorkbook workbook, TimingTotals totals)
+    /// <summary>
+    /// ADR-107: Overview is filter-aware. SUBTOTAL(101-111) ignores autofilter-hidden rows;
+    /// COUNTIFS/SUMIFS would not, so they are deliberately not used.
+    /// </summary>
+    private static void BuildOverview(XLWorkbook workbook)
     {
         var sheet = workbook.Worksheets.Add(OverviewSheet);
         sheet.Cell(1, 1).Value = "Metric";
         sheet.Cell(1, 2).Value = "Value";
 
         var row = 2;
-        WriteCount(sheet, ref row, "Runs", totals.RunCount);
-        WriteCount(sheet, ref row, "Succeeded", totals.SucceededCount);
-        WriteCount(sheet, ref row, "Failed", totals.FailedCount);
-        WriteCount(sheet, ref row, "Partially Succeeded", totals.PartiallySucceededCount);
-        WriteCount(sheet, ref row, "Canceled", totals.CanceledCount);
-        WriteCount(sheet, ref row, "Not Started", totals.NotStartedCount);
-        WriteCount(sheet, ref row, "Wait > 5 Min", totals.WaitOverFiveMinutesCount);
-        WriteAverage(sheet, ref row, "Avg Queue Wait (sec)", totals.AverageQueueWaitSeconds);
-        WriteAverage(sheet, ref row, "Avg Duration (sec)", totals.AverageRunDurationSeconds);
-        WriteAverage(sheet, ref row, "Avg Total (sec)", totals.AverageTotalDurationSeconds);
+        WriteFormula(sheet, ref row, "Runs", $"=IFERROR(SUBTOTAL(103,{RunsTableName}[RunId]),0)");
+        WriteFormula(sheet, ref row, "Succeeded", $"=SUBTOTAL(109,{RunsTableName}[IsSucceeded])");
+        WriteFormula(sheet, ref row, "Failed", $"=SUBTOTAL(109,{RunsTableName}[IsFailed])");
+        WriteFormula(sheet, ref row, "Partially Succeeded", $"=SUBTOTAL(109,{RunsTableName}[IsPartiallySucceeded])");
+        WriteFormula(sheet, ref row, "Canceled", $"=SUBTOTAL(109,{RunsTableName}[IsCanceled])");
+        WriteFormula(sheet, ref row, "Not Started", $"=SUBTOTAL(109,{RunsTableName}[IsNotStarted])");
+        WriteFormula(sheet, ref row, "Wait > 5 Min", $"=SUBTOTAL(109,{RunsTableName}[WaitOver5Min])");
+        WriteFormula(sheet, ref row, "Avg Queue Wait (sec)", $"=IFERROR(SUBTOTAL(101,{RunsTableName}[QueueWaitSeconds]),\"\")", SecondsFormat);
+        WriteFormula(sheet, ref row, "Avg Duration (sec)", $"=IFERROR(SUBTOTAL(101,{RunsTableName}[RunDurationSeconds]),\"\")", SecondsFormat);
+        WriteFormula(sheet, ref row, "Avg Total (sec)", $"=IFERROR(SUBTOTAL(101,{RunsTableName}[TotalDurationSeconds]),\"\")", SecondsFormat);
     }
 
     private static void BuildMonthly(XLWorkbook workbook, IReadOnlyList<MonthlyTimingSummary> months)
@@ -162,15 +199,18 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
             WriteAverage(sheet, row, 11, month.Totals.AverageTotalDurationSeconds);
             row++;
         }
+
+        // ADR-107: Monthly is deliberately static; one note two rows below the last data row.
+        sheet.Cell(1 + months.Count + 2, 1).Value = MonthlyNote;
     }
 
-    private static void BuildRuns(XLWorkbook workbook, IReadOnlyList<BuildRun> runs)
+    private static IXLTable BuildRuns(XLWorkbook workbook, IReadOnlyList<BuildRun> runs)
     {
         var sheet = workbook.Worksheets.Add(RunsSheet);
 
-        for (var column = 0; column < RunsHeaders.Length; column++)
+        for (var column = 0; column < RunsTableHeaders.Length; column++)
         {
-            sheet.Cell(1, column + 1).Value = RunsHeaders[column];
+            sheet.Cell(1, column + 1).Value = RunsTableHeaders[column];
         }
 
         // ADR-105: QueueTime ascending, nulls last, then RunId ascending - deterministic.
@@ -201,21 +241,62 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
             WriteOptionalDouble(sheet, row, 14, timing.QueueWaitSeconds);
             WriteOptionalDouble(sheet, row, 15, timing.RunDurationSeconds);
             WriteOptionalDouble(sheet, row, 16, timing.TotalDurationSeconds);
+
+            // ADR-107 helper columns (1/0) so SUBTOTAL can count over the table.
+            sheet.Cell(row, 17).Value = Matches(run.Result, "succeeded") ? 1 : 0;
+            sheet.Cell(row, 18).Value = Matches(run.Result, "failed") ? 1 : 0;
+            sheet.Cell(row, 19).Value = Matches(run.Result, "partiallySucceeded") ? 1 : 0;
+            sheet.Cell(row, 20).Value = Matches(run.Result, "canceled") ? 1 : 0;
+            sheet.Cell(row, 21).Value = Matches(run.Status, "notStarted") ? 1 : 0;
+            sheet.Cell(row, 22).Value =
+                timing.QueueWaitSeconds is { } wait && wait > TimingCalculator.WaitOverFiveMinutesThresholdSeconds ? 1 : 0;
+
+            // Month feeds the Pivot; blank when the queue time is absent.
+            if (run.QueueTime is { } queueTime)
+            {
+                sheet.Cell(row, 23).Value = queueTime.UtcDateTime.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+            }
+
             row++;
         }
+
+        // ADR-107: header-only tables are valid in ClosedXML, so a zero-run root still gets a
+        // real ListObject and the structured-reference formulas stay resolvable.
+        var table = sheet.Range(1, 1, row - 1, RunsTableHeaders.Length).CreateTable(RunsTableName);
+        table.ShowAutoFilter = true;
+
+        for (var column = RunsHeaders.Length + 1; column <= RunsTableHeaders.Length; column++)
+        {
+            sheet.Column(column).Hide();
+        }
+
+        return table;
     }
 
-    private static void WriteCount(IXLWorksheet sheet, ref int row, string metric, int value)
+    private static void BuildPivot(XLWorkbook workbook, IXLTable runsTable)
     {
-        sheet.Cell(row, 1).Value = metric;
-        sheet.Cell(row, 2).Value = value;
-        row++;
+        var sheet = workbook.Worksheets.Add(PivotSheet);
+        var pivot = sheet.PivotTables.Add(PivotTableName, sheet.Cell("A1"), runsTable);
+
+        pivot.RowLabels.Add("Month");
+        pivot.Values.Add("RunId", "Count of RunId").SummaryFormula = XLPivotSummary.Count;
+        pivot.Values.Add("IsSucceeded", "Sum of IsSucceeded").SummaryFormula = XLPivotSummary.Sum;
+        pivot.Values.Add("IsFailed", "Sum of IsFailed").SummaryFormula = XLPivotSummary.Sum;
+        pivot.Values.Add("WaitOver5Min", "Sum of WaitOver5Min").SummaryFormula = XLPivotSummary.Sum;
+        pivot.Values.Add("QueueWaitSeconds", "Average of QueueWaitSeconds").SummaryFormula = XLPivotSummary.Average;
+        pivot.PivotCache.RefreshDataOnOpen = true;
     }
 
-    private static void WriteAverage(IXLWorksheet sheet, ref int row, string metric, double? value)
+    private static void WriteFormula(IXLWorksheet sheet, ref int row, string metric, string formula, string? format = null)
     {
         sheet.Cell(row, 1).Value = metric;
-        WriteAverage(sheet, row, 2, value);
+        var cell = sheet.Cell(row, 2);
+        cell.FormulaA1 = formula;
+        if (format is not null)
+        {
+            cell.Style.NumberFormat.Format = format;
+        }
+
         row++;
     }
 
@@ -272,4 +353,8 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
         cell.Value = timestamp.UtcDateTime;
         cell.Style.NumberFormat.Format = TimestampFormat;
     }
+
+    /// <summary>Mirrors the case-insensitive status/result matching used by the timing rollup.</summary>
+    private static bool Matches(string? value, string expected)
+        => string.Equals(value, expected, StringComparison.OrdinalIgnoreCase);
 }
