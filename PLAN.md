@@ -368,9 +368,9 @@ truncate.
     on every page; when remaining reaches 0 the next call throws
     `PipelinePausedException(RunCapReached)` with no HTTP call; `0` pauses on the
     first call; negative throws `ArgumentOutOfRangeException`.
-60. **`IDefinitionResolver.ResolveAsync(BuildQuery query, CancellationToken cancellationToken)`**
-    returns definition ids only (union, sorted, distinct); patterns are read from
-    `BuildQuery.DefinitionNames`. `DetailPolicyEvaluator.NeedsDetail(BuildRun run, DetailPolicy policy)`
+60. **`IDefinitionResolver.ResolveAsync(BuildQuery query, IReadOnlyList<string> patterns, CancellationToken cancellationToken)`**
+    returns definition ids only (union, sorted, distinct); the caller passes the
+    patterns explicitly (typically from `BuildQuery.DefinitionNames`). `DetailPolicyEvaluator.NeedsDetail(BuildRun run, DetailPolicy policy)`
     is the pure Core predicate. `PipelinePausedException` exposes `PauseReason Reason`,
     `TimeSpan? RetryAfter`, `int? RemainingBudget`.
 61. **Error sanitization.** Message = status + relative path (no host, no query)
@@ -388,6 +388,23 @@ truncate.
     `UnsupportedSchemaVersionException`; an IO failure throws `StorageException`.
     Quarantine is gated on writer mode, so a reader can never steal the manifest
     from a concurrent writer.
+66. **Pipeline location.** `BuildAnalytics.App.Retrieval`: it stamps
+    `CreatedAt`/`UpdatedAt`, and ADR-20 forbids a clock in Core. Core keeps the
+    pure helpers (fingerprint, `ManifestCompatibility`, `DetailPolicyEvaluator`).
+67. **Partial-page failures.** A detail 404 skips the run, records its id in
+    `FailedRunIds`, and advances the cursor. A storage failure on `WriteAsync`
+    aborts with `Failed` and does **not** advance — a checkpoint never advances
+    past a run that was not durably written. Token exhausted with a non-empty
+    `FailedRunIds` is still `completed`.
+68. **Initial commit.** An `in_progress` manifest (fingerprint, `cursor=null`,
+    timestamps) is written before the first list call, so a crash leaves a
+    fingerprinted, resumable root.
+69. **Invalid/repeated token.** Restart from `cursor=null` **once** per run; a
+    second invalid or repeated token fails the run. Never loop.
+70. **Cancellation** leaves the last committed status (`in_progress`), does not
+    advance the cursor, and performs no cleanup commit with the cancelled token.
+71. **Short-circuit.** Read the manifest first; a `completed` manifest returns
+    before resolving ids or calling the source.
 
 Accepted limitations (documented, no action): stale `.tmp` files are ignored by
 `ListRunIdsAsync` and are not garbage-collected at startup; `Manifest` list
