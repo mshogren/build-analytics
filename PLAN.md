@@ -16,140 +16,238 @@ Summarize Azure DevOps build timing data (with possible later visualizations) wh
 - Clean-slate rewrite, not a refactor.
 - .NET 10, xUnit.
 - **Raw files are the source of truth.**
-- A small checkpoint/manifest store tracks retrieval progress only.
+- A small manifest tracks retrieval progress only.
 - Analysis/reporting performs no network access and reads local raw files.
-- Credentials come from environment variables; never persisted.
+- Credentials come from `AZDO_PAT` only; never persisted, never a CLI flag.
 
 ## Target Layout
 
-Keep it small — three projects:
+Three projects. Core is **pure**; App holds every adapter.
 
 ```
-BuildAnalytics.Core   # models, query/options contracts, resume state, pure analysis
-BuildAnalytics.App    # CLI + composition root + ADO/filesystem/report adapters
+BuildAnalytics.Core   # models, query/fingerprint, pure timing, PORT INTERFACES
+BuildAnalytics.App    # CLI + composition root + ADO client + file stores + Excel writer
 BuildAnalytics.Tests  # xUnit
 ```
 
-Split infrastructure into its own assembly only if testability forces it.
+Core references no IO: no `File`/`Directory`, no `HttpClient`, no `ClosedXML`,
+no `DateTime.Now`/`UtcNow`, no `Random`/`Guid`/`Environment`. Enforced by an
+architecture test.
 
-## Data Model (raw-files-primary)
+Ports defined in Core:
+
+```csharp
+IBuildSource         // paged list retrieval (+ optional detail)
+IManifestStore       // read/commit retrieval progress
+IRunStore            // write/read raw run files
+ITimingReportWriter  // emit a summary (Excel is the v1 adapter; in-memory test adapter)
+```
+
+A `TimeProvider`/delay seam is injected for deterministic backoff and timestamps.
+
+## Domain Model (raw-files-primary)
 
 ```
 <outputRoot>/
-  manifest.json                 # retrieval progress + query fingerprint
-  runs/<runId>__<name>/run.json # raw build payload; atomic write
+  manifest.json          # retrieval progress + fingerprint
+  manifest.lock          # exclusive single-writer lock
+  runs/<runId>/run.json  # raw build payload; atomic write
 ```
 
-- `manifest.json` holds: `schemaVersion`, query fingerprint, last committed page
-  cursor, completed run ids, timestamps, last error, and status
-  (`pending|in_progress|completed|failed`).
-- `schemaVersion` is `1`. A newer on-disk version is a typed failure; the tool
-  refuses to proceed rather than guess.
-- Corrupted/truncated manifest: quarantine to `manifest.corrupt-<ts>.json`, scan
-  `runs/` for existing ids, restart list pagination from `cursor=null`, and
-  upsert idempotently. Only list calls are repeated, never detail calls.
-- Resume key = fingerprint of (org, project, time range, definition ids, outputRoot).
-- Advance the checkpoint **only after** the run file is durably written.
-- Checkpoint must never be ahead of the files.
-- Upsert by run id; repeated pages must not duplicate data.
-- Page sequentially. Never parallelize list retrieval.
+Canonical run path is `runs/<runId>/run.json`. The old `<id>__<name>` folder is
+**not** used: definition renames created duplicate folders for one run id and
+broke upsert.
+
+`run.json` field contract:
+
+```
+schemaVersion, source(list|detail), fetchedWith,
+id, definitionId, definitionName, buildNumber,
+queueTime, startTime, finishTime,
+status, result, reason, poolId, poolName, sourceBranch
+```
+
+All of these are present in the build-list response, so the detail endpoint is a
+fallback. `source` + `fetchedWith` make an incomplete file detectable on resume.
+
+The legacy `runs.json` artifact is **dropped**; nothing reads it.
+
+## Fingerprint
+
+Identity = fingerprint of the raw query inputs:
+
+```
+org, project, minTime, maxTime,
+definitionIds (as given), definitionNames (as given),
+resolvedDefinitionIds (sorted), detailPolicy, apiVersion
+```
+
+Excludes `outputRoot` (a location, not query identity) and `maxRuns` (a runtime
+budget). A mismatch against a non-empty `runs/` is a typed error telling the
+operator to use a new output root.
+
+## Manifest & Durability
+
+`manifest.json` holds: `schemaVersion`, fingerprint, status, cursor, timestamps,
+`lastError`, and failed run ids. The **cursor is the single authoritative
+progress field**; the completed-run set is reconciled by scanning `runs/`, not
+trusted as a second source of truth.
+
+Durability protocol, identical for `run.json` and `manifest.json`:
+
+1. write to a temp file
+2. `Flush(flushToDisk: true)`
+3. atomic rename over the target
+4. commit the manifest the same way
+
+Guarantee: **process-crash safe**; power-loss durability is best-effort and
+explicitly out of scope. The checkpoint is advanced only after the run file is
+durable, so the checkpoint is never ahead of the files.
+
+Single writer: `manifest.lock` opened `FileShare.None` with PID/liveness. A second
+process gets a typed `OutputRootInUse`. Reporting is read-only and tolerates a
+concurrent writer by skipping incomplete files.
+
+## Status Machine
+
+```
+pending -> in_progress -> completed
+                     \--> paused   (run cap or Retry-After abort; resumable)
+                     \--> failed   (unrecoverable error; resumable after fix)
+```
+
+`completed` means the continuation token is exhausted **and** every page's run
+files are durable. Only `completed` short-circuits a re-run. A cap or throttle
+abort records `paused`, never `completed`, so a later resume cannot silently
+truncate.
 
 ## Retrieval Rules
 
-- Fetch build list once per page; consume list fields directly.
-- Per-run detail endpoint only when a required field is missing — opt-in, not default.
+- Fetch build-list pages sequentially; one page in memory at a time.
+- Per-run detail only when the list item lacks a required contract field;
+  the active `detailPolicy` is part of the fingerprint.
 - Retry only `408, 429, 500, 502, 503, 504` plus connection/timeout exceptions.
-  Max 4 attempts; exponential backoff 1→2→4→8s capped at 30s; jitter is seeded
-  and deterministic.
-- Honor `Retry-After`, but abort with a typed error if it exceeds 60s — resuming
-  later is cheaper than blocking, and the checkpoint preserves progress.
-- `maxRuns` is applied at **page boundaries only**; whole pages are committed and
-  retrieval never stops mid-page. It is a safety valve, so slight overshoot is fine.
-- Stream output; one page in memory at a time.
-- Wire `CancellationToken` from Ctrl+C through the whole pipeline.
+  **5 attempts (4 retries), waits 1, 2, 4, 8s.** Parse `Retry-After` in both
+  delta-seconds and HTTP-date form. A `Retry-After` over 60s aborts to `paused`.
+- A detail-fetch throttle aborts the pipeline to `paused`, not just that run.
+- `maxRuns` is a runtime budget applied by trimming the page budget,
+  `$top = min(pageSize, remaining)`, so overshoot is bounded. It leaves status
+  `paused`.
+- An invalid/expired continuation token restarts from `cursor=null` and upserts.
+- Definition-name wildcard resolution pages and retries like any list call.
+- Ctrl+C cancellation propagates through the whole pipeline.
 
-## TDD Slices
+## Security
 
-1. **Contracts + domain (pure).** Timing metrics and monthly rollup.
-2. **Resume/manifest store.** Atomicity, restart, idempotent upsert.
-3. **ADO source adapter.** Paging, continuation forwarding, retries, no per-run overfetch.
-4. **Pipeline.** list → select missing → fetch → write → checkpoint.
-5. **Reporting.** Summary from local raw files; Excel writer as one adapter.
-6. **Cleanup.** Simplify CLI/options; deprecate legacy flags after parity.
+- No `Pat` member in config; no `--pat` flag. `AZDO_PAT` only.
+- Credentials are never logged, persisted, or written to the manifest.
+- No absolute local paths in report output; `SourcePath` is removed from the
+  report contract.
+- `lastError` and quarantined manifests must not capture a PAT or absolute path.
+- `.gitignore` excludes `build-analytics.config.json`.
 
-Each slice: failing test → minimal implementation → refactor → full suite green.
+## Resolved Decisions
+
+1. **Retry.** As in Retrieval Rules — 5 attempts, waits 1/2/4/8s; `Retry-After`
+   honored up to 60s, then abort to `paused`.
+2. **Run cap.** `maxRuns` trims the page budget; whole pages are committed; the
+   run is left `paused`, never `completed`.
+3. **Skewed timestamps.** Any strictly reversed endpoint pair yields `null`,
+   never negative. Equal endpoints yield `0.0`.
+4. **Summary scope.** Duration columns are expressed in **seconds** (no
+   percentiles/cost). Counts and monthly buckets are still produced.
+5. **Output.** Excel only in v1, behind `ITimingReportWriter`. An in-memory test
+   adapter keeps the seam honest. CSV/JSON and charts are deferred.
+6. **CLI.** Breaking rewrite accepted. Legacy flags are removed outright; no
+   migration shim and no deprecation/parity phase.
+7. **Corrupt manifest.** Quarantine to `manifest.corrupt-<utc>-<guid>.json`,
+   rescan `runs/`, restart from `cursor=null`, upsert. Skip only files that are
+   `detail`-complete under the active policy.
+8. **Schema version.** `schemaVersion: 1`. Any mismatch (older or newer) is a
+   typed error directing the operator to a new output root. No migration code,
+   and a newer-but-valid manifest is never quarantined as "corrupt".
+9. **Rounding.** Domain stores raw seconds. Rounding to 2dp happens only in
+   aggregate/report output. The `>300s` wait threshold compares raw seconds.
+10. **Month ordering.** Real UTC months ascending; `(unknown)` sorts last.
+11. **Month anchor.** Grouping anchor is `QueueTime` only; no `StartTime`
+    fallback. Absent `QueueTime` goes to `(unknown)`.
+12. **Monthly metrics.** `RunCount`, `Succeeded`, `Failed`, `PartiallySucceeded`,
+    `Canceled`, `NotStarted`, `WaitOverFiveMin`, and the three averages.
+
+## Design Review Disposition (F1–F17)
+
+All findings accepted and folded into the sections above.
+
+| ID | Finding | Resolution |
+|---|---|---|
+| F1 | Concurrent writers on one output root | Lock file + typed `OutputRootInUse`; reader tolerates writers |
+| F2 | Manifest durability unspecified | Single temp→flush→rename protocol for both files; scope stated |
+| F3 | `maxRuns` overshoot (~1000x) | Trim `$top` to the remaining budget; leave `paused` |
+| F4 | `<id>__<name>` breaks upsert | Canonical `runs/<runId>/run.json` |
+| F5 | Two sources of truth | Cursor authoritative; reconcile by scan; `source` in each file |
+| F6 | Core charter ambiguous | Core = pure + ports; all IO in App; architecture test |
+| F7 | Detail opt-in undefined | Enumerated `run.json` contract; policy in fingerprint |
+| F8 | Fingerprint incomplete/mis-scoped | Fingerprint raw inputs; drop `outputRoot`/`maxRuns` |
+| F9 | Status machine undefined | Explicit machine; cap/throttle → `paused` |
+| F10 | No seam for crash tests | Inject store/FS port; tests fail between write/rename/commit |
+| F11 | Slices under-define contracts | Slice 1 ships all ports + query/fingerprint + models |
+| F12 | PAT/paths contradict security | Env-only PAT; drop `--pat` and `SourcePath` |
+| F13 | Schema upgrade path | Typed error on mismatch; no migration |
+| F14 | Retry math ambiguous | 5 attempts, waits 1/2/4/8s; both `Retry-After` forms |
+| F15 | Q4 wording vs monthly sheet | Reworded: duration columns are seconds; counts retained |
+| F16 | Q6 vs "deprecate after parity" | Legacy flags deleted outright |
+| F17 | Smaller gaps | `runs.json` dropped; token restart; GUID quarantine; list retry |
 
 ## Test Matrix (high value)
-
-Grouped, with the raw-files-primary semantics applied. Source of truth: tester's
-re-mapped A/B/C/D matrix plus group E.
 
 **A — resumable retrieval.** Sequential multi-page token forwarding; resume from
 manifest cursor; crash-before-commit replay without duplicates; repeated token
 bounded; empty first page idempotent; **no per-run overfetch** (0 detail calls
-when list fields suffice); Ctrl+C cancellation mid-pipeline; one page in memory.
+when the list item satisfies the contract); Ctrl+C cancellation; one page in memory.
 
-**B — manifest + raw files.** Atomic `run.json` write (temp + rename);
-checkpoint advanced only after durable file write; checkpoint never ahead of
-files; file-level upsert by run id; durability across reopen; fingerprint
-scoping; manifest status machine; no credentials in artifacts.
+**B — manifest + raw files.** Atomic `run.json` write; checkpoint advanced only
+after durable file write; checkpoint never ahead of files; by run id; durability across reopen; fingerprint scoping; status machine;
+single-writer lock; no credentials or absolute paths in artifacts.
 
-**C — retry/backoff.** Capped exponential schedule; jitter deterministic with
-seed; `Retry-After` honored; transient retried / permanent fails fast;
-exhaustion throws typed error; cancellation mid-backoff stops; retried detail
-fetch stays idempotent.
+**C — retry/backoff.** Deterministic waits 1/2/4/8s; both `Retry-After` forms;
+abort to `paused` over 60s; transient retried / permanent fails fast; exhaustion
+throws typed error; cancellation mid-backoff stops; retried detail fetch idempotent.
 
-**D — timing (pure).** Durations from timestamps as raw seconds; missing/skewed →
-null; averages ignore nulls and round only at output; UTC monthly grouping +
-`(unknown)` bucket sorted last; wait > 5 min strictly > 300 on raw seconds;
-case-insensitive counts; purity guard (no ambient clock or IO).
+**D — timing (pure).** Durations as raw seconds; missing/skewed → null; equal →
+0; averages ignore nulls, round only at output, and are null when all null; UTC
+month grouping with `(unknown)` sorted last; wait > 5 min strictly > 300 on raw
+seconds; case-insensitive counts; purity guard.
 
 **E — reporting/security.** Reporting never touches the network; no absolute
-local paths in output; PAT never logged or written; `.gitignore` excludes
-`build-analytics.config.json`.
+paths in output; PAT never logged or written; `.gitignore` excludes the config.
 
-Constraints: no real network; no `Task.Delay` in tests; no `DateTime.UtcNow`
-inside pure logic; no shared mutable output root across tests.
+Constraints: no real network; no `Task.Delay` in tests; no ambient clock inside
+pure logic; each test gets its own output root.
 
-## Security
+## TDD Slices
 
-- Fix in the first change: `.gitignore` must exclude `build-analytics.config.json`.
-- PAT via `AZDO_PAT` only; never logged or written.
-- No local absolute paths in report output.
+1. **Contracts + pure timing.** All ports, `BuildQuery` + fingerprint, models,
+   `TimeProvider`/delay seam, `TimingCalculator`, `MonthlyTimingRollup`.
+   No adapters. (Revised per F6/F11.)
+2. **Manifest + run store adapters.** Atomicity, lock, restart, idempotent
+   upsert, crash-before-commit fault injection.
+3. **ADO source adapter.** Paging, continuation forwarding, retry, no overfetch.
+4. **Pipeline.** list → select missing → (detail if needed) → write → checkpoint.
+5. **Reporting.** Summary from local raw files; Excel adapter + in-memory adapter.
+6. **CLI.** New `retrieve`/`report` verbs; legacy flags deleted.
 
-## Resolved Decisions (Q1–Q8)
-
-1. **Retry.** Retry `408, 429, 500, 502, 503, 504` and connection/timeout errors.
-   4 attempts, backoff 1→2→4→8s, cap 30s. `Retry-After` honored up to 60s; beyond
-   that, abort with a typed error and rely on resume.
-2. **Run cap.** `maxRuns` applies at page boundaries only; commit whole pages.
-3. **Skewed timestamps.** `finishTime < startTime` yields `null`, never negative.
-4. **Summary scope.** Seconds only — queue wait, run duration, total.
-5. **Output.** Excel only for now; CSV/JSON deferred behind `ITimingReportWriter`.
-6. **CLI.** Breaking rewrite accepted; no migration note required.
-7. **Corrupt manifest.** Quarantine and rebuild; replay list pages, upsert files.
-8. **Schema version.** `schemaVersion: 1`; newer on disk is a typed failure.
-9. **Rounding.** The domain stores **raw seconds** (full precision). Rounding to
-   2dp happens only when emitting aggregates/report values. The `>300s` wait
-   threshold compares raw seconds.
-10. **Month ordering.** Real UTC months ascending; `(unknown)` sorts **last**.
-11. **Month anchor.** Grouping anchor is `QueueTime` only; no `StartTime`
-    fallback. Absent `QueueTime` → `(unknown)` bucket.
-12. **Monthly metrics.** `RunCount`, `Succeeded`, `Failed`, `PartiallySucceeded`,
-    `Canceled`, `NotStarted`, `WaitOverFiveMin`, and the three averages.
-    "Seconds only" (Q4) means no percentiles/cost — not dropping these counts.
+Each slice: failing test → minimal implementation → refactor → full suite green.
 
 ## Handoff
 
 | Role | Deliverable |
 |---|---|
-| implementer | Execute slices 1–3 test-first on a new branch |
-| tester | Own the test matrix; review the implementer's tests for gaps |
-| reviewer | Critique design against SOLID and over-engineering before merge |
+| implementer | Execute slices 1–3 test-first on `rewrite/impl` |
+| tester | Own D1–D9; verify each slice independently |
+| reviewer | Critique implementation against SOLID/over-engineering before merge |
 
 ## Environment
 
 - .NET SDK 10.0.401 installed.
 - Baseline verified: `dotnet test build-analytics.slnx` → 15/15 pass on `da40a14`.
 - Existing code builds with 3 nullable warnings; reference-only.
-
