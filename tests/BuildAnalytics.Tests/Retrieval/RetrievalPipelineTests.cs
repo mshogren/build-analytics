@@ -295,8 +295,6 @@ public sealed class RetrievalPipelineTests
             created,
             clock.GetUtcNow(),
             null,
-            [],
-            [],
             []);
         source.Page(null, new BuildPage([TestRuns.Create(id: 1), TestRuns.Create(id: 2)], null, TotalCount: 2));
 
@@ -665,6 +663,22 @@ public sealed class RetrievalPipelineTests
         Assert.Equal(["started:-", "page:1:2", "completed:1:2"], progress.Events);
     }
 
+    [Fact]
+    public async Task Progress_does_not_count_repairing_an_on_disk_run_as_new()
+    {
+        var (pipeline, source, runs, manifests, clock, _, progress) = Create();
+        runs.Put(TestRuns.Create(id: 1, definitionId: null, source: RunSource.List));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null, TotalCount: 3));
+        source.Detail(1, DetailCompleteRun(1, clock));
+
+        await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        // baseline = 1, so repairing run 1 must not advance handled: 1/3, not 2/3 (ADR-102).
+        Assert.Contains("percent:30:1/3", progress.Events);
+        Assert.DoesNotContain("percent:65:2/3", progress.Events);
+    }
+
     // ---- helpers ----
 
     private static BuildRun DetailCompleteRun(int id, TimeProvider clock)
@@ -695,9 +709,7 @@ public sealed class RetrievalPipelineTests
             clock.GetUtcNow(),
             clock.GetUtcNow(),
             null,
-            failedRunIds ?? [],
-            [],
-            []);
+            failedRunIds ?? []);
 
     private static (
         RetrievalPipeline Pipeline,

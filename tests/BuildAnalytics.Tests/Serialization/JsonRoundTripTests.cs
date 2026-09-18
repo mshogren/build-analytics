@@ -214,9 +214,7 @@ public sealed class JsonRoundTripTests
             new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero),
             new DateTimeOffset(2024, 1, 2, 0, 0, 0, TimeSpan.Zero),
             "boom",
-            [1, 2],
-            [7, 8],
-            ["ci", "release"]);
+            [1, 2]);
 
         var back = JsonSerializer.Deserialize<Manifest>(JsonSerializer.Serialize(manifest, BuildAnalyticsJson.Options), BuildAnalyticsJson.Options);
 
@@ -229,8 +227,6 @@ public sealed class JsonRoundTripTests
         Assert.Equal(manifest.UpdatedAt, back.UpdatedAt);
         Assert.Equal(manifest.LastError, back.LastError);
         Assert.Equal(manifest.FailedRunIds, back.FailedRunIds);
-        Assert.Equal(manifest.DefinitionIds, back.DefinitionIds);
-        Assert.Equal(manifest.DefinitionNames, back.DefinitionNames);
         Assert.Equal(manifest, back);
     }
 
@@ -238,8 +234,6 @@ public sealed class JsonRoundTripTests
     public void Manifest_DefensivelyCopiesLists_AndEqualityIsStructural()
     {
         var failedRunIds = new List<int> { 1 };
-        var definitionIds = new List<int> { 2 };
-        var definitionNames = new List<string> { "ci" };
         var manifest = new Manifest(
             Manifest.CurrentSchemaVersion,
             "fp",
@@ -248,9 +242,7 @@ public sealed class JsonRoundTripTests
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,
-            failedRunIds,
-            definitionIds,
-            definitionNames);
+            failedRunIds);
         var equal = new Manifest(
             Manifest.CurrentSchemaVersion,
             "fp",
@@ -259,17 +251,11 @@ public sealed class JsonRoundTripTests
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,
-            [1],
-            [2],
-            ["ci"]);
+            [1]);
 
         failedRunIds.Add(9);
-        definitionIds.Add(9);
-        definitionNames.Add("release");
 
         Assert.Equal([1], manifest.FailedRunIds);
-        Assert.Equal([2], manifest.DefinitionIds);
-        Assert.Equal(["ci"], manifest.DefinitionNames);
         Assert.Equal(manifest, equal);
         Assert.Equal(manifest.GetHashCode(), equal.GetHashCode());
     }
@@ -307,7 +293,7 @@ public sealed class JsonRoundTripTests
     {
         var expected = new[]
         {
-            "createdAt", "cursor", "definitionIds", "definitionNames", "failedRunIds",
+            "createdAt", "cursor", "failedRunIds",
             "fingerprint", "lastError", "schemaVersion", "status", "updatedAt"
         };
 
@@ -323,8 +309,6 @@ public sealed class JsonRoundTripTests
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,
-            [],
-            [],
             []);
 
     private static string[] PropertyNames<T>(T value)

@@ -270,8 +270,6 @@ public sealed class CliApplicationTests
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,
-            [],
-            [],
             []);
         await File.WriteAllBytesAsync(
             Path.Combine(root, "manifest.json"),

@@ -368,7 +368,7 @@ public sealed class FileManifestStoreTests
 
         var rebuilt = new Manifest(
             Manifest.CurrentSchemaVersion, "fp", ManifestStatus.InProgress, null,
-            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, null, [], [], []);
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, null, []);
         await store.CommitAsync(rebuilt, CancellationToken.None);
         await runStore.WriteAsync(TestRuns.Create(id: 11, buildNumber: "second"), CancellationToken.None);
 
@@ -453,7 +453,7 @@ public sealed class FileManifestStoreTests
         using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
         var manifest = new Manifest(
             Manifest.CurrentSchemaVersion, "fp", ManifestStatus.InProgress, null,
-            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, "boom", [], [], []);
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, "boom", []);
 
         await store.CommitAsync(manifest, CancellationToken.None);
 
@@ -594,9 +594,7 @@ public sealed class FileManifestStoreTests
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch.AddMinutes(1),
             null,
-            [],
-            [1, 2],
-            ["ci"]);
+            []);
 
     private static string ValidManifestJson(int schemaVersion)
         => $$"""

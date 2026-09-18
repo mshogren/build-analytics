@@ -133,7 +133,5 @@ public sealed class StorageCrashTests
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,
-            [],
-            [],
             []);
 }

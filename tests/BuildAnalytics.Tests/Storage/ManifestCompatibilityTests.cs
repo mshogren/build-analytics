@@ -55,7 +55,5 @@ public sealed class ManifestCompatibilityTests
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,
-            [],
-            [],
             []);
 }

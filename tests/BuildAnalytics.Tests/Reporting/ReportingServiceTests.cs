@@ -226,8 +226,6 @@ public sealed class ReportingServiceTests
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,
-            [],
-            [],
             []);
 
     private static (ReportingService Service, RecordingManifestStore Manifests, RecordingRunStore Runs, InMemoryTimingReportWriter Writer) Create()

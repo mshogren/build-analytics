@@ -28,9 +28,7 @@ public sealed record Manifest
         DateTimeOffset createdAt,
         DateTimeOffset updatedAt,
         string? lastError,
-        IReadOnlyList<int> failedRunIds,
-        IReadOnlyList<int> definitionIds,
-        IReadOnlyList<string> definitionNames)
+        IReadOnlyList<int> failedRunIds)
     {
         SchemaVersion = schemaVersion;
         Fingerprint = fingerprint;
@@ -40,8 +38,6 @@ public sealed record Manifest
         UpdatedAt = updatedAt;
         LastError = lastError;
         FailedRunIds = Copy(failedRunIds);
-        DefinitionIds = Copy(definitionIds);
-        DefinitionNames = Copy(definitionNames);
     }
 
     public int SchemaVersion { get; }
@@ -60,10 +56,6 @@ public sealed record Manifest
 
     public IReadOnlyList<int> FailedRunIds { get; }
 
-    public IReadOnlyList<int> DefinitionIds { get; }
-
-    public IReadOnlyList<string> DefinitionNames { get; }
-
     public bool Equals(Manifest? other)
         => other is not null
            && SchemaVersion == other.SchemaVersion
@@ -73,9 +65,7 @@ public sealed record Manifest
            && CreatedAt == other.CreatedAt
            && UpdatedAt == other.UpdatedAt
            && string.Equals(LastError, other.LastError, StringComparison.Ordinal)
-           && FailedRunIds.SequenceEqual(other.FailedRunIds)
-           && DefinitionIds.SequenceEqual(other.DefinitionIds)
-           && DefinitionNames.SequenceEqual(other.DefinitionNames);
+           && FailedRunIds.SequenceEqual(other.FailedRunIds);
 
     public override int GetHashCode()
     {
@@ -88,8 +78,6 @@ public sealed record Manifest
         hash.Add(UpdatedAt);
         hash.Add(LastError);
         AddAll(ref hash, FailedRunIds);
-        AddAll(ref hash, DefinitionIds);
-        AddAll(ref hash, DefinitionNames);
         return hash.ToHashCode();
     }
 

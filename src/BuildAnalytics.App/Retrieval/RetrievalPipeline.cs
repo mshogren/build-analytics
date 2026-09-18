@@ -108,9 +108,7 @@ public sealed class RetrievalPipeline(
                 createdAt,
                 clock.GetUtcNow(),
                 lastError,
-                failedRunIds,
-                [],
-                []);
+                failedRunIds);
 
             await manifests.CommitAsync(manifest, cancellationToken).ConfigureAwait(false);
         }
@@ -207,14 +205,23 @@ public sealed class RetrievalPipeline(
                                 failedRunIds.Add(run.Id);
                             }
 
-                            handled++;
+                            // ADR-102: only ids outside the on-disk baseline advance the percentage.
+                            if (!existingIdSet.Contains(run.Id))
+                            {
+                                handled++;
+                            }
+
                             continue;
                         }
                     }
 
                     await runs.WriteAsync(run, cancellationToken).ConfigureAwait(false);
                     runsWritten++;
-                    handled++;
+                    if (!existingIdSet.Contains(run.Id))
+                    {
+                        handled++;
+                    }
+
                     writtenThisPass.Add(run.Id);
                     failedRunIds.Remove(run.Id);
                 }
