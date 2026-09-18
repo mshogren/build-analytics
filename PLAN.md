@@ -65,8 +65,8 @@ public interface IDelayScheduler {
 }
 ```
 
-`IBuildSource` is **page-oriented**, not `IAsyncEnumerable`: the manifest
-checkpoint is a per-page cursor, so page boundaries must stay visible.
+`IBuildSource` is **page-oriented**, not `IAsyncEnumerable`: each page is fetched,
+written, and committed as a bounded unit, so page boundaries stay visible.
 `IRunStore.ListRunIdsAsync` supports the corrupt-manifest rebuild (Q7).
 
 Canonical types (ratified after the implementer's design landed):
@@ -140,10 +140,10 @@ use a new output root.
 
 ## Manifest & Durability
 
-`manifest.json` holds: `schemaVersion`, fingerprint, status, cursor, timestamps,
-`lastError`, and failed run ids. The **cursor is the single authoritative
-progress field**; the completed-run set is reconciled by scanning `runs/`, not
-trusted as a second source of truth.
+`manifest.json` holds: `schemaVersion`, fingerprint, status, timestamps,
+`lastError`, and failed run ids. There is **no cursor** (ADR-108): the durable
+progress marker is the set of run files, so a re-run lists from the beginning and
+skips whatever is already on disk (ADR-78).
 
 Durability protocol, identical for `run.json` and `manifest.json`:
 
@@ -187,8 +187,12 @@ truncate.
 - `maxRuns` is a runtime budget applied by trimming the page budget,
   `$top = min(pageSize, remaining)`, so overshoot is bounded. It leaves status
   `paused`.
-- An invalid/expired continuation token restarts from `cursor=null` and upserts.
-- Definition-name wildcard resolution pages and retries like any list call.
+- An invalid/expired continuation token restarts the listing from the beginning
+  and upserts.
+- A re-run against a `completed` root **refreshes**: it lists from the beginning,
+  adds builds it has not seen, and stops once a page contributes no new runs
+  (ADR-97/100). A run that is not `completed` always pages the whole list.
+- Definition-name resolution was removed with the definition filters (ADR-99).
 - Ctrl+C cancellation propagates through the whole pipeline.
 
 ## Security
