@@ -79,6 +79,23 @@ public sealed class AdoRequestExecutorTests
     }
 
     [Fact]
+    public async Task Correlation_id_falls_back_to_ms_correlation_request_id()
+    {
+        var (executor, handler, _) = Create();
+        handler.Enqueue(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Forbidden);
+            response.Headers.TryAddWithoutValidation("x-ms-correlation-request-id", "corr-3");
+            return response;
+        });
+
+        var exception = await Assert.ThrowsAsync<AdoRequestException>(
+            () => executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default));
+
+        Assert.Equal("corr-3", exception.CorrelationId);
+    }
+
+    [Fact]
     public async Task Detail_404_is_RunNotFoundException()
     {
         var (executor, handler, _) = Create();
@@ -89,6 +106,16 @@ public sealed class AdoRequestExecutorTests
 
         Assert.Equal(42, exception.RunId);
         Assert.Equal(1, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task BadRequest_on_a_list_request_is_InvalidContinuationTokenException()
+    {
+        var (executor, handler, _) = Create();
+        handler.EnqueueStatus(HttpStatusCode.BadRequest);
+
+        await Assert.ThrowsAsync<InvalidContinuationTokenException>(
+            () => executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default));
     }
 
     [Fact]
@@ -164,20 +191,64 @@ public sealed class AdoRequestExecutorTests
             () => executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default));
 
         Assert.Equal(PauseReason.RetryAfterTooLong, exception.Reason);
+        Assert.Equal(TimeSpan.FromSeconds(61), exception.RetryAfter);
         Assert.Empty(delays.Delays);
         Assert.Equal(1, handler.RequestCount);
     }
 
     [Fact]
-    public async Task Detail_throttle_pauses_the_pipeline()
+    public async Task Negative_retry_after_clamps_to_zero()
     {
         var (executor, handler, delays) = Create();
-        handler.EnqueueStatus(HttpStatusCode.TooManyRequests, retryAfter: "5");
+        handler.EnqueueStatus(HttpStatusCode.ServiceUnavailable, retryAfter: "-5");
+        handler.EnqueueJson("{}");
+
+        await executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default);
+
+        Assert.Equal([TimeSpan.Zero], delays.Delays);
+    }
+
+    [Fact]
+    public async Task Detail_throttle_retries_then_pauses_on_exhaustion()
+    {
+        var (executor, handler, delays) = Create();
+        for (var i = 0; i < AdoRequestExecutor.MaxAttempts; i++)
+        {
+            handler.EnqueueStatus(HttpStatusCode.TooManyRequests);
+        }
 
         var exception = await Assert.ThrowsAsync<PipelinePausedException>(
             () => executor.SendAsync(Factory, "/project/_apis/build/builds/42", AdoRequestKind.Detail, 42, null, default));
 
         Assert.Equal(PauseReason.DetailThrottled, exception.Reason);
+        Assert.Equal([1, 2, 4, 8], delays.Delays.Select(delay => delay.TotalSeconds));
+        Assert.Equal(AdoRequestExecutor.MaxAttempts, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task Detail_throttle_can_recover_on_a_later_attempt()
+    {
+        var (executor, handler, delays) = Create();
+        handler.EnqueueStatus(HttpStatusCode.TooManyRequests, retryAfter: "5");
+        handler.EnqueueJson("""{ "id": 42 }""");
+
+        await executor.SendAsync(Factory, "/project/_apis/build/builds/42", AdoRequestKind.Detail, 42, null, default);
+
+        Assert.Equal([TimeSpan.FromSeconds(5)], delays.Delays);
+        Assert.Equal(2, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task Detail_throttle_with_a_long_retry_after_pauses_immediately()
+    {
+        var (executor, handler, delays) = Create();
+        handler.EnqueueStatus(HttpStatusCode.TooManyRequests, retryAfter: "61");
+
+        var exception = await Assert.ThrowsAsync<PipelinePausedException>(
+            () => executor.SendAsync(Factory, "/project/_apis/build/builds/42", AdoRequestKind.Detail, 42, null, default));
+
+        Assert.Equal(PauseReason.RetryAfterTooLong, exception.Reason);
+        Assert.Equal(TimeSpan.FromSeconds(61), exception.RetryAfter);
         Assert.Empty(delays.Delays);
         Assert.Equal(1, handler.RequestCount);
     }

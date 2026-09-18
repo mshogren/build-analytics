@@ -20,7 +20,7 @@ public sealed class PortContractTests
         AssertMethod(typeof(IRunStore), "ListRunIdsAsync", typeof(Task<IReadOnlyList<int>>), typeof(CancellationToken));
         AssertMethod(typeof(ITimingReportWriter), "WriteAsync", typeof(Task), typeof(TimingSummary), typeof(CancellationToken));
         AssertMethod(typeof(IDelayScheduler), "DelayAsync", typeof(Task), typeof(TimeSpan), typeof(CancellationToken));
-        AssertMethod(typeof(IDefinitionResolver), "ResolveAsync", typeof(Task<IReadOnlyList<int>>), typeof(BuildQuery), typeof(CancellationToken));
+        AssertMethod(typeof(IDefinitionResolver), "ResolveAsync", typeof(Task<IReadOnlyList<int>>), typeof(BuildQuery), typeof(IReadOnlyList<string>), typeof(CancellationToken));
     }
 
     [Fact]

@@ -9,9 +9,9 @@ using BuildAnalytics.Core.Query;
 namespace BuildAnalytics.App.AzureDevOps;
 
 /// <summary>
-/// Azure DevOps build source: paged build-list retrieval, opt-in detail fallback,
-/// and client-side definition-name resolution. Holds the per-session run budget; the
-/// pipeline is the only caller and drives pages sequentially.
+/// Azure DevOps build source: one paged build-list GET per call (ADR-55), opt-in detail
+/// fallback, and client-side definition-name resolution. Holds the per-session run budget;
+/// the pipeline owns paging, repeated-token detection, and restart.
 /// </summary>
 public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver
 {
@@ -22,14 +22,15 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver
     private int _fetched;
 
     public AdoBuildSource(
-        HttpClient httpClient,
-        IDelayScheduler delayScheduler,
+        HttpMessageHandler httpMessageHandler,
         TimeProvider timeProvider,
+        IDelayScheduler delayScheduler,
         AdoBuildSourceOptions? options = null)
     {
+        ArgumentNullException.ThrowIfNull(httpMessageHandler);
         ArgumentNullException.ThrowIfNull(timeProvider);
 
-        _executor = new AdoRequestExecutor(httpClient, delayScheduler, timeProvider);
+        _executor = new AdoRequestExecutor(new HttpClient(httpMessageHandler, disposeHandler: false), delayScheduler, timeProvider);
         _timeProvider = timeProvider;
         _options = options ?? new AdoBuildSourceOptions();
     }
@@ -43,8 +44,9 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver
             _fetched = 0;
         }
 
-        var top = AdoPageBudget.TrimTop(_options.PageSize, _options.MaxRuns - _fetched)
-            ?? throw new PipelinePausedException(PauseReason.RunCapReached);
+        var remaining = _options.MaxRuns - _fetched;
+        var top = AdoPageBudget.TrimTop(_options.PageSize, remaining)
+            ?? throw new PipelinePausedException(PauseReason.RunCapReached, remainingBudget: remaining);
 
         var path = AdoUrlBuilder.ListPath(query.Project);
         var uri = AdoUrlBuilder.ListUri(query, top, continuationToken);
@@ -64,11 +66,6 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver
             {
                 runs.Add(run);
             }
-        }
-
-        if (response.ContinuationToken is not null && response.ContinuationToken == continuationToken)
-        {
-            throw new InvalidContinuationTokenException(continuationToken);
         }
 
         _fetched += runs.Count;
@@ -95,14 +92,18 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver
         return AdoJsonMapper.MapBuild(document.RootElement, RunSource.Detail, _timeProvider.GetUtcNow());
     }
 
-    public async Task<IReadOnlyList<int>> ResolveAsync(BuildQuery query, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<int>> ResolveAsync(
+        BuildQuery query,
+        IReadOnlyList<string> patterns,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(patterns);
 
         var resolved = new HashSet<int>((query.DefinitionIds ?? []).Where(id => id > 0));
-        var names = (query.DefinitionNames ?? []).Where(name => !string.IsNullOrEmpty(name)).ToArray();
+        var effectivePatterns = patterns.Where(pattern => !string.IsNullOrEmpty(pattern)).ToArray();
 
-        if (names.Length == 0)
+        if (effectivePatterns.Length == 0)
         {
             return Sorted(resolved);
         }
@@ -129,19 +130,14 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver
                 }
             }
 
-            if (response.ContinuationToken is not null && response.ContinuationToken == continuationToken)
-            {
-                throw new InvalidContinuationTokenException(continuationToken);
-            }
-
             continuationToken = response.ContinuationToken;
         }
         while (continuationToken is not null);
 
-        var patterns = names.Select(AdoWildcard.ToRegex).ToArray();
+        var regexes = effectivePatterns.Select(AdoWildcard.ToRegex).ToArray();
         foreach (var definition in definitions)
         {
-            if (patterns.Any(regex =>
+            if (regexes.Any(regex =>
                     (definition.Name is not null && regex.IsMatch(definition.Name))
                     || (definition.Path is not null && regex.IsMatch(definition.Path))))
             {

@@ -339,6 +339,55 @@ truncate.
     `fingerprint` (non-empty), `status`, `createdAt`, `updatedAt`. Missing any is
     corruption and quarantines; `schemaVersion` is validated first so a
     valid-but-wrong version never quarantines.
+51. **`Retry-After` replaces** the scheduled backoff for that attempt; a value
+    below the schedule still wins, and a negative/past value clamps to 0
+    (retry immediately). With no `Retry-After`, the 1/2/4/8 schedule applies.
+52. **60s boundary.** Exactly 60.000s is allowed; only strictly >60s pauses.
+53. **Detail throttle.** A 429 on a detail fetch retries per policy; on
+    exhaustion it throws `PipelinePausedException(DetailThrottled)` so the whole
+    pipeline pauses rather than skipping the run. A >60s `Retry-After` pauses
+    immediately with `RetryAfterTooLong`.
+54. **Timeout vs cancellation.** Classify using the caller token's
+    `IsCancellationRequested`: if cancelled, rethrow and never retry; otherwise a
+    `TaskCanceledException`/`OperationCanceledException` is a per-attempt timeout
+    and is retryable. Unwrap `HttpRequestException.InnerException` for
+    `SocketException`/`IOException`.
+55. **`ListAsync` issues exactly one GET per call.** The pipeline owns paging,
+    repeated-token detection, and restart-on-invalid; the adapter only throws
+    `InvalidContinuationTokenException` on a server 400.
+56. **Token plumbing.** Read `x-ms-continuationtoken` from the response header;
+    send it back as the `continuationToken` query parameter.
+57. **Mapping table.** `definition.id`→`definitionId`, `definition.name`→
+    `definitionName`, `queue.pool.id`→`poolId`, `queue.pool.name`→`poolName`, plus
+    top-level `id`, `buildNumber`, `queueTime`, `startTime`, `finishTime`,
+    `status`, `result`, `reason`, `sourceBranch`. Nothing else is mapped.
+58. **`DetailPolicyEvaluator`** is a pure Core helper tested in slice 3. A
+    `completed` run requires all three timestamps; a null `definitionId` or a
+    blank `definitionName`/`status`/`result` counts as missing.
+59. **`maxRuns`.** Default page size 1000; `$top = max(1, min(pageSize, remaining))`
+    on every page; when remaining reaches 0 the next call throws
+    `PipelinePausedException(RunCapReached)` with no HTTP call; `0` pauses on the
+    first call; negative throws `ArgumentOutOfRangeException`.
+60. **`IDefinitionResolver.ResolveAsync(BuildQuery query, CancellationToken cancellationToken)`**
+    returns definition ids only (union, sorted, distinct); patterns are read from
+    `BuildQuery.DefinitionNames`. `DetailPolicyEvaluator.NeedsDetail(BuildRun run, DetailPolicy policy)`
+    is the pure Core predicate. `PipelinePausedException` exposes `PauseReason Reason`,
+    `TimeSpan? RetryAfter`, `int? RemainingBudget`.
+61. **Error sanitization.** Message = status + relative path (no host, no query)
+    + request id from `x-ms-request-id`, else `x-vss-activity-id`, else
+    `x-ms-correlation-request-id`. Never the body or the PAT.
+62. **`PipelinePausedException`** carries `Reason` plus optional `RetryAfter` /
+    `RemainingBudget`; the pipeline sets `Manifest.Status = Paused`.
+63. **Stamping** always uses the injected clock; `FetchedAt` is never taken from
+    the response.
+64. **Slice-3 tests** inject `HttpMessageHandler` + `TimeProvider` +
+    `IDelayScheduler`; no sockets, no `Task.Delay`.
+65. **Read-only stores never mutate.** On a read-only `FileManifestStore`,
+    `TryReadAsync` returns null for absent or corrupt content and performs **no**
+    quarantine; a valid-but-wrong `schemaVersion` still throws
+    `UnsupportedSchemaVersionException`; an IO failure throws `StorageException`.
+    Quarantine is gated on writer mode, so a reader can never steal the manifest
+    from a concurrent writer.
 
 Accepted limitations (documented, no action): stale `.tmp` files are ignored by
 `ListRunIdsAsync` and are not garbage-collected at startup; `Manifest` list

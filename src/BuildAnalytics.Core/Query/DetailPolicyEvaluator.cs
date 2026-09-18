@@ -1,12 +1,11 @@
 using BuildAnalytics.Core.Models;
-using BuildAnalytics.Core.Query;
 
-namespace BuildAnalytics.App.AzureDevOps;
+namespace BuildAnalytics.Core.Query;
 
 /// <summary>
-/// Pure decision for the ADO detail fallback. <see cref="DetailPolicy.ListOnly"/> never
-/// needs detail; <see cref="DetailPolicy.FillMissing"/> needs it only for a missing
-/// contract field or a completed run with a missing timestamp.
+/// Pure decision for the ADO detail fallback (ADR-58). <see cref="DetailPolicy.ListOnly"/>
+/// never needs detail; <see cref="DetailPolicy.FillMissing"/> needs it only for a missing
+/// contract field or a completed run with a missing timestamp. Blank strings count as missing.
 /// </summary>
 public static class DetailPolicyEvaluator
 {
@@ -20,9 +19,9 @@ public static class DetailPolicyEvaluator
         }
 
         if (run.DefinitionId is null
-            || run.DefinitionName is null
-            || run.Status is null
-            || run.Result is null)
+            || string.IsNullOrWhiteSpace(run.DefinitionName)
+            || string.IsNullOrWhiteSpace(run.Status)
+            || string.IsNullOrWhiteSpace(run.Result))
         {
             return true;
         }

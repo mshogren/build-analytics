@@ -106,16 +106,16 @@ public sealed class AdoRequestExecutor
 
                     if (retryAfter is { } wait && wait > MaxRetryAfter)
                     {
-                        throw new PipelinePausedException(PauseReason.RetryAfterTooLong);
-                    }
-
-                    if (kind == AdoRequestKind.Detail && response.StatusCode == HttpStatusCode.TooManyRequests)
-                    {
-                        throw new PipelinePausedException(PauseReason.DetailThrottled);
+                        throw new PipelinePausedException(PauseReason.RetryAfterTooLong, retryAfter: wait);
                     }
 
                     if (attempt == MaxAttempts)
                     {
+                        if (kind == AdoRequestKind.Detail && response.StatusCode == HttpStatusCode.TooManyRequests)
+                        {
+                            throw new PipelinePausedException(PauseReason.DetailThrottled);
+                        }
+
                         throw new RetryExhaustedException(attempt, requestPath, status, ReadCorrelationId(response), lastTransient);
                     }
 
@@ -130,7 +130,7 @@ public sealed class AdoRequestExecutor
                     throw new RunNotFoundException(runId ?? 0);
                 }
 
-                if (continuationToken is not null && response.StatusCode == HttpStatusCode.BadRequest)
+                if (kind == AdoRequestKind.List && response.StatusCode == HttpStatusCode.BadRequest)
                 {
                     throw new InvalidContinuationTokenException(continuationToken);
                 }
@@ -155,11 +155,19 @@ public sealed class AdoRequestExecutor
     {
         if (exception is OperationCanceledException)
         {
-            // A cancelled caller token is rethrown, never retried; a timeout is transient.
+            // A cancelled caller token is rethrown, never retried; a timeout is transient (ADR-54).
             return !cancellationToken.IsCancellationRequested;
         }
 
-        return exception is HttpRequestException or IOException or SocketException;
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is HttpRequestException or IOException or SocketException)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private TimeSpan? ParseRetryAfter(HttpResponseMessage response)
@@ -177,10 +185,10 @@ public sealed class AdoRequestExecutor
                 continue;
             }
 
-            // delta-seconds wins over HTTP-date.
-            if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds) && seconds >= 0)
+            // delta-seconds wins over HTTP-date; a negative delta clamps to 0 (retry immediately).
+            if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds))
             {
-                return TimeSpan.FromSeconds(seconds);
+                return seconds <= 0 ? TimeSpan.Zero : TimeSpan.FromSeconds(seconds);
             }
 
             if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var date))
@@ -199,7 +207,9 @@ public sealed class AdoRequestExecutor
             : null;
 
     private static string? ReadCorrelationId(HttpResponseMessage response)
-        => FirstHeader(response, "x-ms-request-id") ?? FirstHeader(response, "x-vss-activity-id");
+        => FirstHeader(response, "x-ms-request-id")
+            ?? FirstHeader(response, "x-vss-activity-id")
+            ?? FirstHeader(response, "x-ms-correlation-request-id");
 
     private static string? FirstHeader(HttpResponseMessage response, string name)
         => response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;

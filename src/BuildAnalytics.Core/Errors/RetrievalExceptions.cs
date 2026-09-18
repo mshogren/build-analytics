@@ -16,17 +16,30 @@ public enum PauseReason
 public sealed class PipelinePausedException : Exception
 {
     public PipelinePausedException(PauseReason reason)
-        : this(reason, innerException: null)
+        : this(reason, retryAfter: null, remainingBudget: null, innerException: null)
     {
     }
 
     public PipelinePausedException(PauseReason reason, Exception? innerException)
+        : this(reason, retryAfter: null, remainingBudget: null, innerException)
+    {
+    }
+
+    public PipelinePausedException(PauseReason reason, TimeSpan? retryAfter = null, int? remainingBudget = null, Exception? innerException = null)
         : base(MessageFor(reason), innerException)
     {
         Reason = reason;
+        RetryAfter = retryAfter;
+        RemainingBudget = remainingBudget;
     }
 
     public PauseReason Reason { get; }
+
+    /// <summary>Server-requested wait for <see cref="PauseReason.RetryAfterTooLong"/>.</summary>
+    public TimeSpan? RetryAfter { get; }
+
+    /// <summary>Remaining run budget for <see cref="PauseReason.RunCapReached"/>.</summary>
+    public int? RemainingBudget { get; }
 
     private static string MessageFor(PauseReason reason) => reason switch
     {

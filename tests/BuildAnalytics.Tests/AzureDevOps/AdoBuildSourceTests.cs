@@ -116,19 +116,6 @@ public sealed class AdoBuildSourceTests
     }
 
     [Fact]
-    public async Task Repeated_continuation_token_is_rejected()
-    {
-        var (source, handler, _, _) = Create();
-        handler.EnqueueJson("""{ "value": [] }""", continuationToken: "loop");
-        handler.EnqueueJson("""{ "value": [] }""", continuationToken: "loop");
-
-        await source.ListAsync(Query(), null, default);
-
-        await Assert.ThrowsAsync<InvalidContinuationTokenException>(
-            () => source.ListAsync(Query(), "loop", default));
-    }
-
-    [Fact]
     public async Task BadRequest_on_a_continuation_page_is_invalid_token()
     {
         var (source, handler, _, _) = Create();
@@ -179,7 +166,7 @@ public sealed class AdoBuildSourceTests
         handler.EnqueueJson(
             """{ "count": 1, "value": [ { "id": 7, "name": "ci-nightly", "path": "\\CI" } ] }""");
 
-        var resolved = await source.ResolveAsync(Query(definitionNames: ["ci-*", "\\Rel"]), default);
+        var resolved = await source.ResolveAsync(Query(definitionNames: ["ci-*", "\\Rel"]), ["ci-*", "\\Rel"], default);
 
         Assert.Equal([5, 6, 7], resolved);
         Assert.Equal(2, handler.RequestCount);
@@ -195,7 +182,7 @@ public sealed class AdoBuildSourceTests
             """{ "value": [ { "id": 5, "name": "ci-main", "path": "\\CI" }, { "id": 9, "name": "other", "path": "\\X" } ] }""");
 
         var query = Query(definitionNames: ["ci-*"]) with { DefinitionIds = [9, 3, 3, -1] };
-        var resolved = await source.ResolveAsync(query, default);
+        var resolved = await source.ResolveAsync(query, ["ci-*"], default);
 
         Assert.Equal([3, 5, 9], resolved);
         Assert.Equal(1, handler.RequestCount);
@@ -207,7 +194,7 @@ public sealed class AdoBuildSourceTests
         var (source, handler, _, _) = Create();
 
         var query = Query() with { DefinitionIds = [4, 2, 4] };
-        var resolved = await source.ResolveAsync(query, default);
+        var resolved = await source.ResolveAsync(query, [], default);
 
         Assert.Equal([2, 4], resolved);
         Assert.Equal(0, handler.RequestCount);
@@ -232,7 +219,7 @@ public sealed class AdoBuildSourceTests
         var handler = new ScriptedHttpMessageHandler();
         var delays = new FakeDelayScheduler();
         var clock = new FakeTimeProvider { UtcNow = ClockNow };
-        var source = new AdoBuildSource(new HttpClient(handler), delays, clock, options);
+        var source = new AdoBuildSource(handler, clock, delays, options);
         return (source, handler, delays, clock);
     }
 }

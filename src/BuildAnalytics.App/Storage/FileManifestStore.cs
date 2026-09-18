@@ -59,7 +59,7 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
             return null;
         }
 
-        var bytes = await StorageFileAccess.ReadAllBytesAsync(_manifestPath, cancellationToken);
+        var bytes = await ReadAllBytesAsync(cancellationToken);
 
         try
         {
@@ -68,8 +68,7 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
 
             if (!TryReadSchemaVersion(root, out var schemaVersion))
             {
-                Quarantine(cancellationToken);
-                return null;
+                return HandleMalformed(cancellationToken);
             }
 
             if (schemaVersion != Manifest.CurrentSchemaVersion)
@@ -79,24 +78,52 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
 
             if (!HasRequiredFields(root))
             {
-                Quarantine(cancellationToken);
-                return null;
+                return HandleMalformed(cancellationToken);
             }
 
             var manifest = root.Deserialize<Manifest>(BuildAnalyticsJson.Options);
             if (manifest is null || string.IsNullOrWhiteSpace(manifest.Fingerprint))
             {
-                Quarantine(cancellationToken);
-                return null;
+                return HandleMalformed(cancellationToken);
             }
 
             return manifest;
         }
         catch (JsonException)
         {
-            Quarantine(cancellationToken);
+            return HandleMalformed(cancellationToken);
+        }
+    }
+
+    private async Task<byte[]> ReadAllBytesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await StorageFileAccess.ReadAllBytesAsync(_manifestPath, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new StorageException("Could not read the manifest.", exception);
+        }
+    }
+
+    /// <summary>
+    /// ADR-65: a read-only instance never mutates. Malformed content is reported absent without
+    /// quarantine; only a writer instance quarantines, so a reader cannot steal the manifest.
+    /// </summary>
+    private Manifest? HandleMalformed(CancellationToken cancellationToken)
+    {
+        if (_writer is null)
+        {
             return null;
         }
+
+        Quarantine(cancellationToken);
+        return null;
     }
 
     public Task CommitAsync(Manifest manifest, CancellationToken cancellationToken)

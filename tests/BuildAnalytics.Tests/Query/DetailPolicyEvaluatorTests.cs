@@ -1,7 +1,6 @@
-using BuildAnalytics.App.AzureDevOps;
 using BuildAnalytics.Core.Query;
 
-namespace BuildAnalytics.Tests.AzureDevOps;
+namespace BuildAnalytics.Tests.Query;
 
 public sealed class DetailPolicyEvaluatorTests
 {
@@ -33,6 +32,22 @@ public sealed class DetailPolicyEvaluatorTests
             "definitionName" => TestRuns.Create(definitionName: null),
             "status" => TestRuns.Create(status: null),
             _ => TestRuns.Create(result: null)
+        };
+
+        Assert.True(DetailPolicyEvaluator.NeedsDetail(run, DetailPolicy.FillMissing));
+    }
+
+    [Theory]
+    [InlineData("definitionName")]
+    [InlineData("status")]
+    [InlineData("result")]
+    public void FillMissing_blank_strings_count_as_missing(string field)
+    {
+        var run = field switch
+        {
+            "definitionName" => TestRuns.Create(definitionName: "   "),
+            "status" => TestRuns.Create(status: ""),
+            _ => TestRuns.Create(result: "\t")
         };
 
         Assert.True(DetailPolicyEvaluator.NeedsDetail(run, DetailPolicy.FillMissing));

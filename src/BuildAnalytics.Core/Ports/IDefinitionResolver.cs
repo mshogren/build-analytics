@@ -3,10 +3,13 @@ using BuildAnalytics.Core.Query;
 namespace BuildAnalytics.Core.Ports;
 
 /// <summary>
-/// Resolves a query's raw definition ids/names into the effective, sorted, distinct id set.
-/// Kept separate from the frozen <see cref="IBuildSource"/> so the build-list contract stays stable.
+/// Resolves definition name patterns into effective, sorted, distinct ids.
+/// Kept separate from the frozen <see cref="IBuildSource"/> so the build-list contract stays stable (ADR-37).
 /// </summary>
 public interface IDefinitionResolver
 {
-    Task<IReadOnlyList<int>> ResolveAsync(BuildQuery query, CancellationToken cancellationToken);
+    Task<IReadOnlyList<int>> ResolveAsync(
+        BuildQuery query,
+        IReadOnlyList<string> patterns,
+        CancellationToken cancellationToken);
 }

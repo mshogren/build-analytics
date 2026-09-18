@@ -216,6 +216,60 @@ public sealed class FileManifestStoreTests
     }
 
     [Fact]
+    public async Task Read_only_corrupt_manifest_is_not_quarantined()
+    {
+        using var root = new TempOutputRoot();
+        var manifestPath = Path.Combine(root.Path, "manifest.json");
+        await File.WriteAllTextAsync(manifestPath, "{ not json", CancellationToken.None);
+
+        using var reader = FileManifestStore.OpenReadOnly(root.Path);
+
+        Assert.Null(await reader.TryReadAsync(CancellationToken.None));
+        Assert.True(File.Exists(manifestPath));
+        Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+    }
+
+    [Fact]
+    public async Task Read_only_malformed_manifest_is_not_quarantined()
+    {
+        using var root = new TempOutputRoot();
+        var manifestPath = Path.Combine(root.Path, "manifest.json");
+        await File.WriteAllTextAsync(manifestPath, "{\"fingerprint\":\"fp\"}", CancellationToken.None);
+
+        using var reader = FileManifestStore.OpenReadOnly(root.Path);
+
+        Assert.Null(await reader.TryReadAsync(CancellationToken.None));
+        Assert.True(File.Exists(manifestPath));
+        Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+    }
+
+    [Fact]
+    public async Task Read_only_wrong_schema_still_throws_without_quarantine()
+    {
+        using var root = new TempOutputRoot();
+        var manifestPath = Path.Combine(root.Path, "manifest.json");
+        await File.WriteAllTextAsync(manifestPath, ValidManifestJson(99), CancellationToken.None);
+
+        using var reader = FileManifestStore.OpenReadOnly(root.Path);
+
+        await Assert.ThrowsAsync<UnsupportedSchemaVersionException>(() => reader.TryReadAsync(CancellationToken.None));
+        Assert.True(File.Exists(manifestPath));
+        Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+    }
+
+    [Fact]
+    public void Lock_StreamDisposedOnPostOpenFailure()
+    {
+        using var root = new TempOutputRoot();
+
+        Assert.Throws<StorageException>(() => new FileManifestStore(root.Path, new PhysicalFileOperations(), new ThrowingTimeProvider()));
+
+        // The failed writer must have released the lock stream.
+        using var second = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        Assert.NotNull(second);
+    }
+
+    [Fact]
     public async Task Quarantine_DoesNotOverwriteExistingQuarantineFile()
     {
         using var root = new TempOutputRoot();
@@ -519,6 +573,11 @@ public sealed class FileManifestStoreTests
           "definitionNames": []
         }
         """;
+
+    private sealed class ThrowingTimeProvider : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => throw new InvalidOperationException("clock failure");
+    }
 
     private sealed class CancellingTimeProvider : TimeProvider
     {
