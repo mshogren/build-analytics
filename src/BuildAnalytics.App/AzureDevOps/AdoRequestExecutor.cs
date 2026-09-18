@@ -130,8 +130,11 @@ public sealed class AdoRequestExecutor
                     throw new RunNotFoundException(runId ?? 0);
                 }
 
-                if (kind == AdoRequestKind.List && response.StatusCode == HttpStatusCode.BadRequest)
+                if (kind == AdoRequestKind.List
+                    && response.StatusCode == HttpStatusCode.BadRequest
+                    && continuationToken is not null)
                 {
+                    // ADR-72: a 400 is a token error only when a token was actually sent.
                     throw new InvalidContinuationTokenException(continuationToken);
                 }
 

@@ -257,6 +257,35 @@ public sealed class RetrievalPipelineTests
         Assert.Equal(2, source.ListCalls.Count);
     }
 
+    [Fact]
+    public async Task Bad_request_without_a_token_fails_without_restarting()
+    {
+        var (pipeline, source, _, _, manifests, _, _) = Create();
+        source.ListThrows(null, new AdoRequestException(400, "/project/_apis/build/builds", null));
+
+        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Failed, result.Status);
+        Assert.Single(source.ListCalls);
+        Assert.Equal(ManifestStatus.Failed, manifests.Commits[^1].Status);
+    }
+
+    [Fact]
+    public async Task Non_404_detail_failure_aborts_failed_without_advancing()
+    {
+        var (pipeline, source, _, runs, manifests, _, _) = Create();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], "t1"));
+        source.DetailThrows(1, new AdoRequestException(403, "/project/_apis/build/builds/1", "corr-1"));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Failed, result.Status);
+        Assert.Null(result.Cursor);
+        Assert.Equal(ManifestStatus.Failed, manifests.Commits[^1].Status);
+        Assert.Null(manifests.Commits[^1].Cursor);
+        Assert.Empty(runs.Writes);
+    }
+
     // ---- cancellation ----
 
     [Fact]

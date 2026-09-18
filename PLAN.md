@@ -405,6 +405,30 @@ truncate.
     advance the cursor, and performs no cleanup commit with the cancelled token.
 71. **Short-circuit.** Read the manifest first; a `completed` manifest returns
     before resolving ids or calling the source.
+72. **Token-error classification.** A 400 is `InvalidContinuationTokenException`
+    **only** when a continuation token was sent on that request; a 400 with no
+    token is a permanent `AdoRequestException`. This bounds pipeline restarts to
+    genuine token failures.
+73. **Only a detail 404 is a per-run skip.** A detail `RunNotFoundException`
+    records `FailedRunIds` and advances. Every other detail failure —
+    `AdoRequestException` (401/403/409/422), an unexpected exception, or any
+    non-404 HTTP error — aborts with `Status = Failed` and does not advance the
+    cursor, because such failures usually affect every run.
+74. **Reporting read path.** Reuses `IRunStore` plus a read-only `IManifestStore`
+    (`OpenReadOnly`); no new port. Reporting performs no writes and has no network
+    dependency.
+75. **No completed retrieval.** An absent manifest or `Status != completed`
+    throws a typed `ReportingErrorException` (CLI exits non-zero). A completed
+    root with zero runs yields a valid zero-filled report.
+76. **Excel contract.** `Overview` (Metric/Value: Runs, Succeeded, Failed,
+    Partially Succeeded, Canceled, Not Started, Wait > 5 Min, and the three
+    averages) and `Monthly` (Month + the same columns) — real UTC months
+    ascending, `(unknown)` last. The Runs sheet is dropped. Null averages render
+    blank; the destination path is adapter-owned (default
+    `<outputRoot>/timing-report.xlsx`).
+77. **Reporting failures.** A corrupt run file is skipped and counted; an
+    unsupported run `schemaVersion` aborts; a listed id whose file is absent is
+    skipped silently.
 
 Accepted limitations (documented, no action): stale `.tmp` files are ignored by
 `ListRunIdsAsync` and are not garbage-collected at startup; `Manifest` list

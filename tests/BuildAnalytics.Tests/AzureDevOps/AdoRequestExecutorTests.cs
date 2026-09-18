@@ -129,13 +129,16 @@ public sealed class AdoRequestExecutorTests
     }
 
     [Fact]
-    public async Task BadRequest_on_a_list_request_is_InvalidContinuationTokenException()
+    public async Task BadRequest_without_a_token_is_a_permanent_AdoRequestException()
     {
         var (executor, handler, _) = Create();
         handler.EnqueueStatus(HttpStatusCode.BadRequest);
 
-        await Assert.ThrowsAsync<InvalidContinuationTokenException>(
+        var exception = await Assert.ThrowsAsync<AdoRequestException>(
             () => executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default));
+
+        Assert.Equal(400, exception.StatusCode);
+        Assert.Equal(1, handler.RequestCount);
     }
 
     [Fact]
