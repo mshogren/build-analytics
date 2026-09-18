@@ -305,6 +305,26 @@ public sealed class RetrievalPipelineTests
     }
 
     [Fact]
+    public async Task Completed_manifest_refresh_does_not_early_stop_on_a_page_of_incomplete_on_disk_runs()
+    {
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Put(TestRuns.Create(id: 1, definitionId: null, source: RunSource.List));
+        runs.Put(TestRuns.Create(id: 2, definitionId: null, source: RunSource.List));
+        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null), TestRuns.Create(id: 2, definitionId: null)], "t1", TotalCount: 2));
+        source.Page("t1", new BuildPage([], null, TotalCount: 2));
+        source.Detail(1, DetailCompleteRun(1, clock));
+        source.Detail(2, DetailCompleteRun(2, clock));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.Equal([1, 2], source.DetailCalls);
+        Assert.Equal([1, 2], runs.Writes.Select(run => run.Id));
+        Assert.True(source.ListCalls.Count > 1, "paging must continue past a page of incomplete on-disk runs");
+    }
+
+    [Fact]
     public async Task Completed_manifest_refresh_keeps_a_failure_that_persists_on_a_later_page()
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
