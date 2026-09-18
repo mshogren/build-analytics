@@ -534,6 +534,20 @@ truncate.
     on-disk baseline, so repairing an incomplete file does not inflate the
     percentage; the reported percent is clamped to 100.
 103. **`Manifest` drops `DefinitionIds`/`DefinitionNames`**, dead after ADR-99.
+104. **Progress ticks are emitted per run, not per page.** The 5% bucket check
+    runs inside the per-run loop (after each run is handled), so ticks appear as
+    work happens rather than in a burst at the end of a page.
+105. **The report carries a raw `Runs` sheet** alongside `Overview` and `Monthly`.
+    `ITimingReportWriter` takes a report object holding the summary **and** the
+    runs; the sheet has one row per stored run: `RunId, DefinitionId,
+    DefinitionName, BuildNumber, QueueTime, StartTime, FinishTime, Status, Result,
+    Reason, PoolId, PoolName, SourceBranch, QueueWaitSeconds, RunDurationSeconds,
+    TotalDurationSeconds` (durations via `TimingCalculator`, raw seconds), ordered
+    by `QueueTime` (nulls last) then `RunId`.
+106. **Accepted limitation: a re-run never updates an existing run.** A refresh
+    adds only runs not already on disk (ADR-78/97), so a build stored while still
+    running keeps its stored values. Chosen deliberately for cost; revisit with an
+    explicit "refresh stored runs" mode if that matters.
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
