@@ -161,6 +161,38 @@ public sealed class FileManifestStoreTests
             recording.Calls.Select(call => call.Operation));
     }
 
+    [Fact]
+    public async Task Read_only_store_reads_while_writer_holds_lock()
+    {
+        using var root = new TempOutputRoot();
+        using var writer = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        await writer.CommitAsync(SampleManifest(), CancellationToken.None);
+
+        using var reader = FileManifestStore.OpenReadOnly(root.Path);
+        var read = await reader.TryReadAsync(CancellationToken.None);
+
+        Assert.NotNull(read);
+        Assert.Equal("fp-1", read!.Fingerprint);
+    }
+
+    [Fact]
+    public async Task Read_only_store_cannot_commit()
+    {
+        using var root = new TempOutputRoot();
+        using var reader = FileManifestStore.OpenReadOnly(root.Path);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reader.CommitAsync(SampleManifest(), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Read_only_store_on_missing_root_returns_null()
+    {
+        using var root = new TempOutputRoot();
+        using var reader = FileManifestStore.OpenReadOnly(Path.Combine(root.Path, "missing"));
+
+        Assert.Null(await reader.TryReadAsync(CancellationToken.None));
+    }
+
     private static Manifest SampleManifest()
         => new(
             Manifest.CurrentSchemaVersion,

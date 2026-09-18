@@ -1,8 +1,8 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
-using BuildAnalytics.Core;
 using BuildAnalytics.Core.Errors;
+using BuildAnalytics.Core;
 using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Ports;
 
@@ -11,29 +11,46 @@ namespace BuildAnalytics.App.Storage;
 /// <summary>
 /// File-backed manifest store with a single-writer lock and atomic commits.
 /// Corrupt manifests are quarantined and reported as absent; schema mismatches are typed errors.
+/// Reporting uses <see cref="OpenReadOnly(string, TimeProvider?)"/> so it can read while a writer is alive.
 /// </summary>
 public sealed class FileManifestStore : IManifestStore, IDisposable
 {
     private readonly string _outputRoot;
     private readonly string _manifestPath;
     private readonly string _lockPath;
-    private readonly AtomicFileWriter _writer;
+    private readonly AtomicFileWriter? _writer;
     private readonly TimeProvider _timeProvider;
     private FileStream? _lock;
 
     public FileManifestStore(string outputRoot, IFileOperations fileOperations, TimeProvider? timeProvider = null)
+        : this(outputRoot, fileOperations, timeProvider, readOnly: false)
+    {
+    }
+
+    private FileManifestStore(string outputRoot, IFileOperations? fileOperations, TimeProvider? timeProvider, bool readOnly)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputRoot);
-        ArgumentNullException.ThrowIfNull(fileOperations);
 
         _outputRoot = Path.GetFullPath(outputRoot);
-        Directory.CreateDirectory(_outputRoot);
         _manifestPath = Path.Combine(_outputRoot, "manifest.json");
         _lockPath = Path.Combine(_outputRoot, "manifest.lock");
-        _writer = new AtomicFileWriter(fileOperations);
         _timeProvider = timeProvider ?? TimeProvider.System;
+
+        if (readOnly)
+        {
+            _writer = null;
+            return;
+        }
+
+        ArgumentNullException.ThrowIfNull(fileOperations);
+        Directory.CreateDirectory(_outputRoot);
+        _writer = new AtomicFileWriter(fileOperations);
         _lock = AcquireLock();
     }
+
+    /// <summary>Opens a read-only view that takes no writer lock and can read during an active writer.</summary>
+    public static FileManifestStore OpenReadOnly(string outputRoot, TimeProvider? timeProvider = null)
+        => new(outputRoot, fileOperations: null, timeProvider, readOnly: true);
 
     public async Task<Manifest?> TryReadAsync(CancellationToken cancellationToken)
     {
@@ -82,6 +99,11 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
     public Task CommitAsync(Manifest manifest, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(manifest);
+
+        if (_writer is null)
+        {
+            throw new InvalidOperationException("This manifest store is read-only and cannot commit.");
+        }
 
         var content = JsonSerializer.SerializeToUtf8Bytes(manifest, BuildAnalyticsJson.Options);
         return _writer.WriteAsync(_manifestPath, content, cancellationToken);

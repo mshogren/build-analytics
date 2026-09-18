@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
-using BuildAnalytics.Core;
 using BuildAnalytics.Core.Errors;
+using BuildAnalytics.Core;
 using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Ports;
 

@@ -231,6 +231,47 @@ public sealed class JsonRoundTripTests
         Assert.Equal(manifest.FailedRunIds, back.FailedRunIds);
         Assert.Equal(manifest.DefinitionIds, back.DefinitionIds);
         Assert.Equal(manifest.DefinitionNames, back.DefinitionNames);
+        Assert.Equal(manifest, back);
+    }
+
+    [Fact]
+    public void Manifest_DefensivelyCopiesLists_AndEqualityIsStructural()
+    {
+        var failedRunIds = new List<int> { 1 };
+        var definitionIds = new List<int> { 2 };
+        var definitionNames = new List<string> { "ci" };
+        var manifest = new Manifest(
+            Manifest.CurrentSchemaVersion,
+            "fp",
+            ManifestStatus.InProgress,
+            null,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch,
+            null,
+            failedRunIds,
+            definitionIds,
+            definitionNames);
+        var equal = new Manifest(
+            Manifest.CurrentSchemaVersion,
+            "fp",
+            ManifestStatus.InProgress,
+            null,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch,
+            null,
+            [1],
+            [2],
+            ["ci"]);
+
+        failedRunIds.Add(9);
+        definitionIds.Add(9);
+        definitionNames.Add("release");
+
+        Assert.Equal([1], manifest.FailedRunIds);
+        Assert.Equal([2], manifest.DefinitionIds);
+        Assert.Equal(["ci"], manifest.DefinitionNames);
+        Assert.Equal(manifest, equal);
+        Assert.Equal(manifest.GetHashCode(), equal.GetHashCode());
     }
 
     [Theory]

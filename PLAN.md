@@ -243,7 +243,8 @@ truncate.
     missing timestamps; only averages skip nulls.
 22. **Value objects copy inputs.** `TimingSummary.Months` is defensively copied so
     caller mutation cannot change equality or hashing.
-23. **JSON settings.** Core exports one canonical `JsonSerializerOptions`:
+23. **JSON settings.** Core exports one canonical `JsonSerializerOptions` as
+    `BuildAnalytics.Core.BuildAnalyticsJson.Options`:
     `JsonSerializerDefaults.Web` (camelCase, case-insensitive reads) plus
     `JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower)`. App adapters and
     tests consume that same instance — no ad-hoc options. Enums serialize as
@@ -270,9 +271,13 @@ truncate.
     `runs/` is non-empty and fingerprints differ. The frozen `IManifestStore` has
     no fingerprint parameter.
 
-Open (not yet decided): `Manifest`'s `IReadOnlyList` fields still use reference
-equality inside record `Equals`. Apply the same defensive-copy pattern if value
-semantics are needed; no ruling yet.
+29. **`Manifest` is a value object too.** It defensively copies `FailedRunIds` /
+    `DefinitionIds` / `DefinitionNames` and implements structural `Equals` /
+    `GetHashCode`, matching `TimingSummary`.
+30. **Read-only manifest access.** `new FileManifestStore(root, faults?)` is the
+    writer and takes the exclusive `manifest.lock` eagerly.
+    `FileManifestStore.OpenReadOnly(root)` takes no lock, so reporting can read
+    while a writer runs; `CommitAsync` on a read-only instance throws.
 
 ## Design Review Disposition (F1–F17)
 
