@@ -1,6 +1,9 @@
 <Solution>
-  <Folder Name="/tests/">
-    <Project Path="tests/BuildAnalytics.Tests.csproj" />
+  <Folder Name="/src/">
+    <Project Path="src/BuildAnalytics.Core/BuildAnalytics.Core.csproj" />
+    <Project Path="src/BuildAnalytics.App/BuildAnalytics.App.csproj" />
   </Folder>
-  <Project Path="build-analytics.csproj" />
+  <Folder Name="/tests/">
+    <Project Path="tests/BuildAnalytics.Tests/BuildAnalytics.Tests.csproj" />
+  </Folder>
 </Solution>
