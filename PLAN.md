@@ -572,6 +572,16 @@ truncate.
     files; `FailedRunIds` are still persisted, and the single-phase list->write
     flow is retained (the list payload already contains every field the report
     needs, so no per-build detail phase is required).
+109. **One run file, append-only.** Runs live in a single
+    `<outputRoot>/runs.jsonl` — one compact JSON object per line (camelCase, string
+    enums), appended per page and flushed durably before the manifest commit.
+    Readers dedupe by run id (a later line supersedes an earlier one) and tolerate
+    a truncated final line. A malformed line is skipped and counted; a line with an
+    unsupported `schemaVersion` is reported via a count, so the pipeline repairs it
+    (re-fetch) while reporting aborts (ADR-77). On completion the file is rewritten
+    once without superseded duplicates via the atomic temp→flush→rename path.
+    `runs/<runId>/run.json` and the `runs/` directory are removed; `IRunStore`
+    becomes `ReadAllAsync` / `AppendAsync` / `ReplaceAllAsync`.
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
