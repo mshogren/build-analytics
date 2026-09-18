@@ -1,123 +1,106 @@
 # build-analytics
 
-Azure DevOps build/export + spreadsheet tool.
+Retrieve Azure DevOps build-run timing data and produce a local Excel summary.
 
-## Config
+The tool retrieves the build **list** only (no per-run detail calls unless you ask
+for them), stores what it needs as plain files, and can be safely stopped and
+resumed. Reporting runs entirely against the local files — it never touches the
+network.
 
-Default config file:
+## Requirements
 
-- `build-analytics.config.json`
+- .NET SDK 10
+- An Azure DevOps personal access token with **build read** scope
 
-Config precedence:
-
-1. config file
-2. environment variables
-3. CLI arguments
-
-You can override config location with:
-
-- `--config <path>`
-- `BUILD_ANALYTICS_CONFIG=<path>`
-
-## Commands
-
-### export
-
-Exports Azure DevOps build run data and writes raw `run.json` files.
+## Build and test
 
 ```bash
-dotnet run --project /workspace/repos/build-analytics -- export
+dotnet build build-analytics.slnx
+dotnet test  build-analytics.slnx
 ```
 
-Useful options:
-
-- `--output-root <path>`
-- `--definition-id <ids>`
-- `--definition-name <names>`
-- `--min-time <iso8601>`
-- `--max-time <iso8601>`
-- `--throttle-limit <n>`
-- `--max-runs <n>`
-- `--count-only`
-
-Example:
+## Retrieve
 
 ```bash
-dotnet run --project /workspace/repos/build-analytics -- export \
-  --output-root /workspace/build-analytics-full
+export AZDO_PAT='<token>'
+
+dotnet run --project src/BuildAnalytics.App -- retrieve \
+  --org https://dev.azure.com/<organization> \
+  --project <project> \
+  --output-root ./analytics
 ```
 
-### spreadsheet
+Options:
 
-Builds an Excel workbook from exported run JSON.
+| Flag | Required | Notes |
+|---|---|---|
+| `--org <url>` | yes | Organization URL, e.g. `https://dev.azure.com/acme` |
+| `--project <name>` | yes | Project name (case-sensitive) |
+| `--output-root <path>` | yes | Created if absent; reuse it to resume |
+| `--from <iso>` / `--to <iso>` | no | ISO-8601 bounds on queue time |
+| `--definition-id <id>` | no | Repeatable; also accepts comma-separated ids |
+| `--definition <glob>` | no | Repeatable; `*`/`?` wildcard matched against definition **name or path** |
+| `--detail list\|fill-missing` | no | Default `list`. `fill-missing` fetches per-run detail only when a list row is missing required fields |
+| `--max-runs <n>` | no | Retrieval budget. `0` pauses immediately; omit for unlimited |
+| `--page-size <n>` | no | Default `1000` |
+| `--api-version <v>` | no | Default `7.1` (part of the retrieval's identity) |
+| `--quiet` | no | Suppress progress output |
+
+**Resuming:** if a run stops (Ctrl+C, a throttle, a failure), just run the same
+command again. Progress is checkpointed per page in `manifest.json`, and
+already-stored runs are not re-fetched.
+
+## Report
 
 ```bash
-dotnet run --project /workspace/repos/build-analytics -- spreadsheet
+dotnet run --project src/BuildAnalytics.App -- report \
+  --output-root ./analytics \
+  --out ./analytics/timing-report.xlsx
 ```
 
-Useful options:
+`--out` is optional and defaults to `<output-root>/timing-report.xlsx`. Reporting
+requires a **completed** retrieval in that root; otherwise it exits non-zero.
 
-- `--input-root <path>`
-- `--output <file.xlsx>`
-- `--pool-id <ids>`
-- `--exclude-reason <reason>`
-- `--max-queue-wait-seconds <sec>`
+The workbook has two sheets:
 
-Example:
+- **Overview** — Runs, Succeeded, Failed, Partially Succeeded, Canceled, Not Started, Wait > 5 Min, and average queue-wait / run / total duration (seconds)
+- **Monthly** — the same columns per UTC month, `(unknown)` last
 
-```bash
-dotnet run --project /workspace/repos/build-analytics -- spreadsheet \
-  --input-root /workspace/build-analytics-full \
-  --output /workspace/build-analytics-full.xlsx \
-  --pool-id 9 \
-  --exclude-reason schedule \
-  --max-queue-wait-seconds 7200
+All durations are seconds. Blank cells mean "not available" (not zero).
+
+## Files on disk
+
+```
+<output-root>/
+  manifest.json                 # retrieval progress (schemaVersion, fingerprint, status, cursor)
+  manifest.lock                 # exclusive lock held by a retrieve
+  runs/<runId>/run.json         # one raw build run per id
+  timing-report.xlsx            # report output (default location)
 ```
 
-## Environment variables
+A retrieval is bound to the query that created it (`org`, `project`, time range,
+resolved definition ids, detail policy, API version). Pointing a **different**
+query at the same output root is an error — use a new root.
 
-Export mode:
+## Credentials
 
-- `AZDO_ORG_URL`
-- `AZDO_PROJECT`
-- `AZDO_PAT`
-- `BUILD_ANALYTICS_OUTPUT_ROOT`
-- `BUILD_ANALYTICS_DEFINITION_IDS`
-- `BUILD_ANALYTICS_DEFINITION_NAMES`
-- `BUILD_ANALYTICS_MIN_TIME`
-- `BUILD_ANALYTICS_MAX_TIME`
-- `BUILD_ANALYTICS_THROTTLE_LIMIT`
-- `BUILD_ANALYTICS_MAX_RUNS`
-- `BUILD_ANALYTICS_COUNT_ONLY`
+`AZDO_PAT` is read from the environment. There is deliberately:
 
-Spreadsheet mode:
+- **no `--pat` flag** (it would leak into shell history and process listings)
+- **no config file** and no `--config`
+- **no PAT stored on disk** — it never appears in `manifest.json`, `run.json`,
+  the workbook, logs, or error messages
 
-- `BUILD_ANALYTICS_INPUT_ROOT`
-- `BUILD_ANALYTICS_OUTPUT_PATH`
-- `BUILD_ANALYTICS_POOL_IDS`
-- `BUILD_ANALYTICS_EXCLUDE_REASONS`
-- `BUILD_ANALYTICS_MAX_QUEUE_WAIT_SECONDS`
+## Exit codes
 
-## Config file example
+| Code | Meaning |
+|---|---|
+| `0` | Completed (retrieve) or report written |
+| `1` | Runtime failure, or retrieval ended `paused`/`failed` |
+| `2` | Usage error (unknown command/flag, missing or invalid value) |
+| `130` | Cancelled with Ctrl+C |
 
-```json
-{
-  "organizationUrl": "https://dev.azure.com/AGLCDevOps",
-  "project": "AGLC",
-  "pat": "<pat>",
-  "outputRoot": "/workspace/build-analytics-full",
-  "inputRoot": "/workspace/build-analytics-full",
-  "outputPath": "/workspace/build-analytics-full.xlsx",
-  "poolIds": [9],
-  "excludeReasons": ["schedule"],
-  "maxQueueWaitSeconds": 7200
-}
-```
+## Design
 
-## Notes
-
-- `export` writes raw run data to `OUTPUT_ROOT/runs/<runId>__<name>/run.json`
-- `spreadsheet` reads the exported raw files and generates:
-  - `Overview`
-  - `Runs`
-  - `Monthly`
+See [`PLAN.md`](PLAN.md) for the architecture and the numbered decisions
+(ADRs) behind the retrieval, storage, reporting, and CLI behaviour.
