@@ -24,7 +24,7 @@ internal static class TestRuns
         => new(
             SchemaVersion: 1,
             Source: source,
-            FetchedWith: FetchedAt,
+            FetchedAt: FetchedAt,
             Id: id,
             DefinitionId: definitionId,
             DefinitionName: definitionName,

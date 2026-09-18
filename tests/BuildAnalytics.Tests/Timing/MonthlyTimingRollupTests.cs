@@ -79,19 +79,73 @@ public sealed class MonthlyTimingRollupTests
         Assert.Equal(300d, overall.AverageTotalDurationSeconds);
     }
 
+    [Theory]
+    [InlineData(100d, 101d, 101d, 100.67d)]
+    [InlineData(100.004d, 100.004d, 100.004d, 100.0d)]
+    [InlineData(100.006d, 100.006d, 100.006d, 100.01d)]
+    public void Averages_round_raw_mean_to_two_decimals(double first, double second, double third, double expected)
+    {
+        var runs = new[] { Run(queueWaitSeconds: first), Run(queueWaitSeconds: second), Run(queueWaitSeconds: third) };
+
+        var overall = MonthlyTimingRollup.Summarize(runs).Overall;
+
+        Assert.Equal(expected, overall.AverageQueueWaitSeconds!.Value);
+    }
+
     [Fact]
-    public void Averages_are_rounded_to_two_decimals_at_rollup_time()
+    public void Averages_per_metric_nulls_are_independent()
+    {
+        var queueOnly = TestRuns.Create(queueTime: T0, startTime: T0.AddSeconds(100), finishTime: null);
+        var finishOnly = TestRuns.Create(queueTime: null, startTime: T0, finishTime: T0.AddSeconds(200));
+
+        var overall = MonthlyTimingRollup.Summarize([queueOnly, finishOnly]).Overall;
+
+        Assert.Equal(100d, overall.AverageQueueWaitSeconds);
+        Assert.Equal(200d, overall.AverageRunDurationSeconds);
+        Assert.Null(overall.AverageTotalDurationSeconds);
+    }
+
+    [Theory]
+    [InlineData(300.0000001d, 1)]
+    [InlineData(300.004d, 1)]
+    [InlineData(299.999d, 0)]
+    public void WaitOverFiveMinutes_compares_raw_not_rounded(double waitSeconds, int expected)
+    {
+        var overall = MonthlyTimingRollup.Summarize([Run(queueWaitSeconds: waitSeconds)]).Overall;
+
+        Assert.Equal(expected, overall.WaitOverFiveMinutesCount);
+    }
+
+    [Fact]
+    public void Result_and_status_null_or_unknown_counts_as_zero_no_throw()
     {
         var runs = new[]
         {
-            Run(queueWaitSeconds: 100.111),
-            Run(queueWaitSeconds: 100.222),
-            Run(queueWaitSeconds: 100.333)
+            TestRuns.Create(result: null, status: null),
+            TestRuns.Create(result: "mystery", status: "mystery")
         };
 
         var overall = MonthlyTimingRollup.Summarize(runs).Overall;
 
-        Assert.Equal(100.22d, overall.AverageQueueWaitSeconds!.Value, precision: 2);
+        Assert.Equal(2, overall.RunCount);
+        Assert.Equal(0, overall.SucceededCount);
+        Assert.Equal(0, overall.FailedCount);
+        Assert.Equal(0, overall.PartiallySucceededCount);
+        Assert.Equal(0, overall.CanceledCount);
+        Assert.Equal(0, overall.NotStartedCount);
+    }
+
+    [Fact]
+    public void Different_offsets_same_utc_month_group_together()
+    {
+        var plusTwo = new DateTimeOffset(2024, 3, 1, 0, 30, 0, TimeSpan.FromHours(2)); // 2024-02-29T22:30Z
+        var utc = new DateTimeOffset(2024, 2, 29, 23, 0, 0, TimeSpan.Zero);
+
+        var summary = MonthlyTimingRollup.Summarize([Run(queueTime: plusTwo), Run(queueTime: utc)]);
+
+        var month = Assert.Single(summary.Months);
+        Assert.Equal("2024-02", month.Month);
+        Assert.Equal(2, month.Totals.RunCount);
     }
 
     [Fact]

@@ -96,13 +96,55 @@ public sealed class TimingCalculatorTests
     }
 
     [Fact]
-    public void Durations_keep_raw_precision_and_are_not_rounded_at_compute_time()
+    public void Sub_millisecond_precision_is_preserved()
     {
         var start = T0;
-        var finish = start.AddTicks(12345678); // 1.2345678s
+        var finish = start.AddTicks(12_345_678); // 1.2345678s
         var timing = TimingCalculator.Calculate(TestRuns.Create(queueTime: T0, startTime: start, finishTime: finish));
 
         Assert.Equal(1.2345678d, timing.RunDurationSeconds!.Value, precision: 9);
+    }
+
+    [Fact]
+    public void Raw_seconds_preserve_fractional_precision()
+    {
+        var start = T0;
+        var queue = start.AddSeconds(-0.125);
+        var timing = TimingCalculator.Calculate(
+            TestRuns.Create(queueTime: queue, startTime: start, finishTime: start.AddSeconds(1)));
+
+        Assert.Equal(0.125d, timing.QueueWaitSeconds!.Value, precision: 9);
+    }
+
+    [Fact]
+    public void All_timestamps_null_yield_all_metrics_null()
+    {
+        var timing = TimingCalculator.Calculate(TestRuns.Create(queueTime: null, startTime: null, finishTime: null));
+
+        Assert.Null(timing.QueueWaitSeconds);
+        Assert.Null(timing.RunDurationSeconds);
+        Assert.Null(timing.TotalDurationSeconds);
+    }
+
+    [Fact]
+    public void Finish_before_queue_yields_null_total_never_negative()
+    {
+        var queue = T0.AddMinutes(10);
+        var finish = T0.AddMinutes(5);
+        var timing = TimingCalculator.Calculate(TestRuns.Create(queueTime: queue, startTime: null, finishTime: finish));
+
+        Assert.Null(timing.TotalDurationSeconds);
+    }
+
+    [Fact]
+    public void Skew_in_one_metric_does_not_poison_others()
+    {
+        var timing = TimingCalculator.Calculate(
+            TestRuns.Create(queueTime: T0, startTime: T0.AddMinutes(10), finishTime: T0.AddMinutes(5)));
+
+        Assert.Equal(600d, timing.QueueWaitSeconds);
+        Assert.Null(timing.RunDurationSeconds);
+        Assert.Equal(300d, timing.TotalDurationSeconds);
     }
 
     [Fact]

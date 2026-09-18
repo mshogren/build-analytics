@@ -21,6 +21,10 @@ public sealed class PurityGuardTests
         "DateTimeOffset.UtcNow",
         "File.",
         "Directory.",
+        "FileStream",
+        "Task.Delay",
+        "Thread.Sleep",
+        "Stopwatch",
         "Random",
         "Guid",
         "Environment."

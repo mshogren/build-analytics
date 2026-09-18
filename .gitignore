@@ -246,3 +246,5 @@ Thumbs.db
 Desktop.ini
 
 build-analytics-full
+# Secrets / local config (PAT must never be committed)
+build-analytics.config.json

@@ -14,7 +14,7 @@ public enum RunSource
 public sealed record BuildRun(
     int SchemaVersion,
     RunSource Source,
-    DateTimeOffset FetchedWith,
+    DateTimeOffset FetchedAt,
     int Id,
     int? DefinitionId,
     string? DefinitionName,

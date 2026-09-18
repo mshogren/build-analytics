@@ -76,6 +76,16 @@ public sealed class BuildQueryFingerprintTests
         Assert.NotEqual(Fingerprint(Query(project: "a")), Fingerprint(Query(project: "b")));
     }
 
+    [Fact]
+    public void Golden_vector_is_pinned()
+    {
+        var query = Query(resolved: [3, 1, 2, 2]);
+
+        Assert.Equal(
+            "4d12d64768d01c094e671b1328410d00b716755f6d9f807bd074d18332d1ea85",
+            BuildQueryFingerprint.Compute(query));
+    }
+
     private static string Fingerprint(BuildQuery query) => BuildQueryFingerprint.Compute(query);
 
     private static BuildQuery Query(
