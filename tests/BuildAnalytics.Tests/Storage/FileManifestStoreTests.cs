@@ -216,21 +216,24 @@ public sealed class FileManifestStoreTests
     }
 
     [Fact]
-    public async Task Read_only_corrupt_manifest_is_not_quarantined()
+    public async Task ReadOnly_TryRead_CorruptManifest_ReturnsNull_AndDoesNotQuarantine()
     {
         using var root = new TempOutputRoot();
         var manifestPath = Path.Combine(root.Path, "manifest.json");
-        await File.WriteAllTextAsync(manifestPath, "{ not json", CancellationToken.None);
+        const string corrupt = "{ not json";
+        await File.WriteAllTextAsync(manifestPath, corrupt, CancellationToken.None);
+        var before = Directory.GetFileSystemEntries(root.Path).OrderBy(path => path).ToArray();
 
         using var reader = FileManifestStore.OpenReadOnly(root.Path);
 
         Assert.Null(await reader.TryReadAsync(CancellationToken.None));
-        Assert.True(File.Exists(manifestPath));
+        Assert.Equal(corrupt, await File.ReadAllTextAsync(manifestPath, CancellationToken.None));
         Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+        Assert.Equal(before, Directory.GetFileSystemEntries(root.Path).OrderBy(path => path).ToArray());
     }
 
     [Fact]
-    public async Task Read_only_malformed_manifest_is_not_quarantined()
+    public async Task ReadOnly_TryRead_MalformedManifest_ReturnsNull_AndDoesNotQuarantine()
     {
         using var root = new TempOutputRoot();
         var manifestPath = Path.Combine(root.Path, "manifest.json");
@@ -244,7 +247,29 @@ public sealed class FileManifestStoreTests
     }
 
     [Fact]
-    public async Task Read_only_wrong_schema_still_throws_without_quarantine()
+    public async Task ReadOnly_TryRead_DoesNotMutateWithConcurrentWriter()
+    {
+        using var root = new TempOutputRoot();
+        using var writer = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        await writer.CommitAsync(SampleManifest(), CancellationToken.None);
+
+        var manifestPath = Path.Combine(root.Path, "manifest.json");
+        await File.WriteAllTextAsync(manifestPath, "{ corrupt", CancellationToken.None);
+
+        using var reader = FileManifestStore.OpenReadOnly(root.Path);
+        Assert.Null(await reader.TryReadAsync(CancellationToken.None));
+
+        Assert.True(File.Exists(manifestPath));
+        Assert.True(File.Exists(Path.Combine(root.Path, "manifest.lock")));
+        Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+
+        // The writer's lock is still valid and commits continue to work.
+        await writer.CommitAsync(SampleManifest(cursor: "cursor-2"), CancellationToken.None);
+        Assert.NotNull(await reader.TryReadAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ReadOnly_TryRead_UnsupportedSchemaVersion_StillThrows()
     {
         using var root = new TempOutputRoot();
         var manifestPath = Path.Combine(root.Path, "manifest.json");
@@ -253,6 +278,21 @@ public sealed class FileManifestStoreTests
         using var reader = FileManifestStore.OpenReadOnly(root.Path);
 
         await Assert.ThrowsAsync<UnsupportedSchemaVersionException>(() => reader.TryReadAsync(CancellationToken.None));
+        Assert.True(File.Exists(manifestPath));
+        Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+    }
+
+    [Fact]
+    public async Task ReadOnly_TryRead_IoFailure_ThrowsStorageException_NoQuarantine()
+    {
+        using var root = new TempOutputRoot();
+        var manifestPath = Path.Combine(root.Path, "manifest.json");
+        await File.WriteAllTextAsync(manifestPath, ValidManifestJson(Manifest.CurrentSchemaVersion), CancellationToken.None);
+
+        using var exclusive = new FileStream(manifestPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        using var reader = FileManifestStore.OpenReadOnly(root.Path);
+
+        await Assert.ThrowsAsync<StorageException>(() => reader.TryReadAsync(CancellationToken.None));
         Assert.True(File.Exists(manifestPath));
         Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
     }

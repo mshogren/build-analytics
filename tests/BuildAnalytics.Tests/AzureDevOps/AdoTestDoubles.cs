@@ -25,15 +25,19 @@ internal sealed class ScriptedHttpMessageHandler : HttpMessageHandler
         HttpStatusCode statusCode = HttpStatusCode.OK,
         string? continuationToken = null,
         string? retryAfter = null,
-        string? requestId = null)
-        => Enqueue(_ => BuildResponse(json, statusCode, continuationToken, retryAfter, requestId));
+        string? requestId = null,
+        string? activityId = null,
+        string? correlationId = null)
+        => Enqueue(_ => BuildResponse(json, statusCode, continuationToken, retryAfter, requestId, activityId, correlationId));
 
     public ScriptedHttpMessageHandler EnqueueStatus(
         HttpStatusCode statusCode,
         string? continuationToken = null,
         string? retryAfter = null,
-        string? requestId = null)
-        => Enqueue(_ => BuildResponse("{}", statusCode, continuationToken, retryAfter, requestId));
+        string? requestId = null,
+        string? activityId = null,
+        string? correlationId = null)
+        => Enqueue(_ => BuildResponse("{}", statusCode, continuationToken, retryAfter, requestId, activityId, correlationId));
 
     public ScriptedHttpMessageHandler EnqueueThrow(Func<Exception> exceptionFactory)
         => Enqueue(_ => throw exceptionFactory());
@@ -43,7 +47,9 @@ internal sealed class ScriptedHttpMessageHandler : HttpMessageHandler
         HttpStatusCode statusCode,
         string? continuationToken,
         string? retryAfter,
-        string? requestId)
+        string? requestId,
+        string? activityId,
+        string? correlationId)
     {
         var response = new HttpResponseMessage(statusCode)
         {
@@ -63,6 +69,16 @@ internal sealed class ScriptedHttpMessageHandler : HttpMessageHandler
         if (requestId is not null)
         {
             response.Headers.TryAddWithoutValidation("x-ms-request-id", requestId);
+        }
+
+        if (activityId is not null)
+        {
+            response.Headers.TryAddWithoutValidation("x-vss-activity-id", activityId);
+        }
+
+        if (correlationId is not null)
+        {
+            response.Headers.TryAddWithoutValidation("x-ms-correlation-request-id", correlationId);
         }
 
         return response;

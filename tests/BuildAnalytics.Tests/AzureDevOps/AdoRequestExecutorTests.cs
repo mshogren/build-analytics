@@ -79,6 +79,26 @@ public sealed class AdoRequestExecutorTests
     }
 
     [Fact]
+    public async Task Correlation_id_priority_request_id_activity_then_correlation()
+    {
+        var (executor, handler, _) = Create();
+        handler.EnqueueStatus(HttpStatusCode.Forbidden, requestId: "corr-1", activityId: "corr-2", correlationId: "corr-3");
+
+        var exception = await Assert.ThrowsAsync<AdoRequestException>(
+            () => executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default));
+
+        Assert.Equal("corr-1", exception.CorrelationId);
+
+        var (executor2, handler2, _) = Create();
+        handler2.EnqueueStatus(HttpStatusCode.Forbidden, activityId: "corr-2", correlationId: "corr-3");
+
+        var exception2 = await Assert.ThrowsAsync<AdoRequestException>(
+            () => executor2.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default));
+
+        Assert.Equal("corr-2", exception2.CorrelationId);
+    }
+
+    [Fact]
     public async Task Correlation_id_falls_back_to_ms_correlation_request_id()
     {
         var (executor, handler, _) = Create();
@@ -209,6 +229,18 @@ public sealed class AdoRequestExecutorTests
     }
 
     [Fact]
+    public async Task Retry_after_below_the_scheduled_wait_still_wins()
+    {
+        var (executor, handler, delays) = Create();
+        handler.EnqueueStatus(HttpStatusCode.ServiceUnavailable, retryAfter: "0");
+        handler.EnqueueJson("{}");
+
+        await executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default);
+
+        Assert.Equal([TimeSpan.Zero], delays.Delays);
+    }
+
+    [Fact]
     public async Task Detail_throttle_retries_then_pauses_on_exhaustion()
     {
         var (executor, handler, delays) = Create();
@@ -258,6 +290,32 @@ public sealed class AdoRequestExecutorTests
     {
         var (executor, handler, delays) = Create();
         handler.EnqueueThrow(() => new HttpRequestException("boom"));
+        handler.EnqueueJson("{}");
+
+        await executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default);
+
+        Assert.Equal([TimeSpan.FromSeconds(1)], delays.Delays);
+        Assert.Equal(2, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task Http_request_exception_wrapping_a_socket_exception_is_retried()
+    {
+        var (executor, handler, delays) = Create();
+        handler.EnqueueThrow(() => new HttpRequestException("boom", new SocketException(10054)));
+        handler.EnqueueJson("{}");
+
+        await executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default);
+
+        Assert.Equal([TimeSpan.FromSeconds(1)], delays.Delays);
+        Assert.Equal(2, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task Http_request_exception_wrapping_an_io_exception_is_retried()
+    {
+        var (executor, handler, delays) = Create();
+        handler.EnqueueThrow(() => new HttpRequestException("boom", new IOException("io")));
         handler.EnqueueJson("{}");
 
         await executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default);
