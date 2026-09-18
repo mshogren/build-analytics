@@ -237,7 +237,12 @@ public sealed class RetrievalPipeline(
         }
     }
 
-    /// <summary>ADR-7/R11: a corrupt or unreadable existing run is treated as missing and re-fetched.</summary>
+    /// <summary>
+    /// ADR-7/R11/ADR-83: a corrupt, unreadable, or stale-schema existing run is treated as
+    /// missing and re-fetched/rewritten - run files are a repairable cache. The manifest's
+    /// schema mismatch stays fatal (ADR-8) because the manifest is authoritative state, and
+    /// reporting still aborts on a stale run schema (ADR-77) since it cannot repair offline.
+    /// </summary>
     private async Task<BuildRun?> TryReadExistingRunAsync(int runId, CancellationToken cancellationToken)
     {
         try
@@ -245,6 +250,10 @@ public sealed class RetrievalPipeline(
             return await runs.TryReadAsync(runId, cancellationToken).ConfigureAwait(false);
         }
         catch (CorruptRunFileException)
+        {
+            return null;
+        }
+        catch (UnsupportedSchemaVersionException)
         {
             return null;
         }

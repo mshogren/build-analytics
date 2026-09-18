@@ -143,6 +143,8 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
 
     public HashSet<int> Unreadable { get; } = [];
 
+    public HashSet<int> StaleSchema { get; } = [];
+
     public Dictionary<int, Exception> WriteFailures { get; } = [];
 
     public void Seed(params int[] runIds)
@@ -168,6 +170,8 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
         }
 
         _runs[run.Id] = run;
+        Unreadable.Remove(run.Id);
+        StaleSchema.Remove(run.Id);
         Writes.Add(run);
         log?.Add($"run:{run.Id}");
         return Task.CompletedTask;
@@ -178,6 +182,11 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
         if (Unreadable.Contains(runId))
         {
             throw new CorruptRunFileException(runId);
+        }
+
+        if (StaleSchema.Contains(runId))
+        {
+            throw new UnsupportedSchemaVersionException(BuildRun.CurrentSchemaVersion, BuildRun.CurrentSchemaVersion + 1);
         }
 
         return Task.FromResult(_runs.TryGetValue(runId, out var run) ? run : null);

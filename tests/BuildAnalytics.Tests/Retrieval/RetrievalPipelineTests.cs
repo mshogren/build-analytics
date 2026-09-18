@@ -131,6 +131,24 @@ public sealed class RetrievalPipelineTests
     }
 
     [Fact]
+    public async Task Rebuild_unsupported_schema_on_disk_run_is_treated_as_missing_and_repaired()
+    {
+        var (pipeline, source, _, runs, manifests, clock, _) = Create();
+        runs.Seed(1);
+        runs.StaleSchema.Add(1);
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
+        source.Detail(1, DetailCompleteRun(1, clock));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.Equal([1], source.DetailCalls);
+        Assert.Single(runs.Writes);
+        Assert.Equal(RunSource.Detail, (await runs.TryReadAsync(1, CancellationToken.None))!.Source);
+    }
+
+    [Fact]
     public async Task Rebuild_does_not_downgrade_detail_source_to_list()
     {
         var (pipeline, source, _, runs, manifests, clock, _) = Create();
