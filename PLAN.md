@@ -278,6 +278,44 @@ truncate.
     writer and takes the exclusive `manifest.lock` eagerly.
     `FileManifestStore.OpenReadOnly(root)` takes no lock, so reporting can read
     while a writer runs; `CommitAsync` on a read-only instance throws.
+31. **Pause signal.** The adapter throws `PipelinePausedException(PauseReason)`
+    (`RetryAfterTooLong`, `RunCapReached`, `DetailThrottled`); the pipeline
+    persists `paused` and exits non-zero.
+32. **Attempts.** 5 total (1 initial + 4 retries), waits 1/2/4/8s. `Retry-After`
+    is consulted only on retryable statuses and delta-seconds wins over HTTP-date;
+    60s is allowed, >60s pauses, a past date clamps to 0.
+33. **Retryable failures.** `HttpRequestException`, `IOException`,
+    `SocketException`, and timeout `OperationCanceledException` (caller token not
+    cancelled). A cancelled caller token is rethrown, never retried.
+34. **Detail-complete rule.** `ListOnly` never needs detail. `FillMissing` needs
+    it only when `definitionId`, `definitionName`, `status`, or `result` is null,
+    or when a `completed` run is missing any timestamp. `buildNumber`, `reason`,
+    `poolId`, `poolName`, `sourceBranch` never trigger detail.
+35. **`maxRuns` trimming** is owned by the adapter: `$top = max(1, min(pageSize,
+    remaining))`; `0` pauses with no call; negative is rejected.
+36. **Invalid continuation token** throws `InvalidContinuationTokenException`
+    (also for a repeated token); the adapter does not restart — the pipeline
+    restarts from `cursor=null` and upserts.
+37. **Definition resolution** is a separate port `IDefinitionResolver`;
+    `IBuildSource` stays frozen.
+38. **Error text** never includes the raw ADO body: status + sanitized relative
+    URL + correlation id only. New error types: `RunNotFoundException`,
+    `RetryExhaustedException`, `AdoRequestException`.
+39. **Stamping.** List runs get `RunSource.List`, detail runs `RunSource.Detail`;
+    `FetchedAt = clock.GetUtcNow()` (the adapter owns `TimeProvider`).
+40. **Status comparison** in the detail rule is case-insensitive, matching every
+    other status/result comparison in the domain.
+41. **Definition resolution** fetches all definitions (paged) and matches
+    client-side: case-insensitive anchored wildcard over `name` **or** `path`,
+    escaping every regex metacharacter except `*` / `?`; then union, sort, and
+    distinct. No `name=` query parameter — the endpoint filter does not cover
+    `path`.
+42. **Run-file validation.** A deserialized run file must have `Id > 0` **and**
+    `Id` equal to its directory key; otherwise `CorruptRunFileException`. A
+    wrong-shape or partial file is corrupt, never silently defaulted (a missing
+    `id` must not create a bogus `runs/0` entry). A requested `runId <= 0` throws
+    `ArgumentOutOfRangeException`; `WriteAsync` likewise rejects a run with
+    `Id <= 0`, and `ListRunIdsAsync` skips non-positive directories.
 
 ## Design Review Disposition (F1–F17)
 

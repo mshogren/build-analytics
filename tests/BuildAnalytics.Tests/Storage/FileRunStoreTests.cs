@@ -189,4 +189,110 @@ public sealed class FileRunStoreTests
 
         Assert.Equal(run, await reader.TryReadAsync(4, CancellationToken.None));
     }
+
+    [Fact]
+    public async Task WriteAsync_FaultBeforeTempWrite_NoTargetFile()
+    {
+        using var root = new TempOutputRoot();
+        var failing = new RecordingFileOperations(
+            new PhysicalFileOperations(),
+            (operation, _) => operation == FileOperation.WriteTemp ? new IOException("injected") : null);
+        var store = new FileRunStore(root.Path, failing);
+
+        await Assert.ThrowsAsync<IOException>(() => store.WriteAsync(TestRuns.Create(id: 4), CancellationToken.None));
+
+        var runDirectory = Path.Combine(root.Path, "runs", "4");
+        Assert.False(File.Exists(Path.Combine(runDirectory, "run.json")));
+        if (Directory.Exists(runDirectory))
+        {
+            Assert.Empty(Directory.GetFiles(runDirectory));
+        }
+    }
+
+    [Fact]
+    public async Task WriteAsync_FaultAfterRename_TargetCompleteReadable()
+    {
+        using var root = new TempOutputRoot();
+        var failing = new RecordingFileOperations(
+            new PhysicalFileOperations(),
+            afterDelegate: (operation, path) =>
+            {
+                if (operation == FileOperation.Rename && path.EndsWith("run.json", StringComparison.Ordinal))
+                {
+                    throw new IOException("injected after rename");
+                }
+            });
+        var store = new FileRunStore(root.Path, failing);
+        var run = TestRuns.Create(id: 4);
+
+        await Assert.ThrowsAsync<IOException>(() => store.WriteAsync(run, CancellationToken.None));
+
+        Assert.Equal(run, await store.TryReadAsync(4, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("{\"schemaVersion\":1,\"source\":\"list\",\"fetchedAt\":\"2024-01-01T00:00:00+00:00\",\"id\":0}")]
+    [InlineData("{\"schemaVersion\":1,\"source\":\"list\",\"fetchedAt\":\"2024-01-01T00:00:00+00:00\",\"id\":7}")]
+    public async Task RunFile_MissingId_Or_IdMismatchDirectory_ThrowsCorruptRunFile(string json)
+    {
+        using var root = new TempOutputRoot();
+        var runDirectory = Path.Combine(root.Path, "runs", "5");
+        Directory.CreateDirectory(runDirectory);
+        await File.WriteAllTextAsync(Path.Combine(runDirectory, "run.json"), json, CancellationToken.None);
+
+        var store = new FileRunStore(root.Path, new PhysicalFileOperations());
+
+        await Assert.ThrowsAsync<CorruptRunFileException>(() => store.TryReadAsync(5, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RunArtifact_ContainsNoAbsolutePath()
+    {
+        using var root = new TempOutputRoot();
+        var store = new FileRunStore(root.Path, new PhysicalFileOperations());
+        await store.WriteAsync(TestRuns.Create(id: 4, sourceBranch: "refs/heads/main"), CancellationToken.None);
+
+        var text = await File.ReadAllTextAsync(Path.Combine(root.Path, "runs", "4", "run.json"), CancellationToken.None);
+
+        Assert.DoesNotContain(root.Path, text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TryRead_non_positive_run_id_throws()
+    {
+        using var root = new TempOutputRoot();
+        var store = new FileRunStore(root.Path, new PhysicalFileOperations());
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => store.TryReadAsync(0, CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => store.TryReadAsync(-1, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task WriteAsync_non_positive_run_id_throws()
+    {
+        using var root = new TempOutputRoot();
+        var store = new FileRunStore(root.Path, new PhysicalFileOperations());
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => store.WriteAsync(TestRuns.Create(id: 0), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ListRunIds_skips_non_positive_directories()
+    {
+        using var root = new TempOutputRoot();
+        var store = new FileRunStore(root.Path, new PhysicalFileOperations());
+        await store.WriteAsync(TestRuns.Create(id: 2), CancellationToken.None);
+
+        foreach (var name in new[] { "0", "-1" })
+        {
+            var directory = Path.Combine(root.Path, "runs", name);
+            Directory.CreateDirectory(directory);
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "run.json"),
+                $"{{\"schemaVersion\":1,\"source\":\"list\",\"fetchedAt\":\"2024-01-01T00:00:00+00:00\",\"id\":{(name == "-1" ? 1 : 0)}}}",
+                CancellationToken.None);
+        }
+
+        Assert.Equal([2], await store.ListRunIdsAsync(CancellationToken.None));
+    }
 }

@@ -27,6 +27,10 @@ public sealed class FileRunStore : IRunStore
     public Task WriteAsync(BuildRun run, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(run);
+        if (run.Id <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(run), run.Id, "Run id must be positive.");
+        }
 
         var content = JsonSerializer.SerializeToUtf8Bytes(run, BuildAnalyticsJson.Options);
         return _writer.WriteAsync(RunPath(run.Id), content, cancellationToken);
@@ -34,6 +38,11 @@ public sealed class FileRunStore : IRunStore
 
     public async Task<BuildRun?> TryReadAsync(int runId, CancellationToken cancellationToken)
     {
+        if (runId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(runId), runId, "Run id must be positive.");
+        }
+
         var path = RunPath(runId);
         if (!File.Exists(path))
         {
@@ -60,8 +69,16 @@ public sealed class FileRunStore : IRunStore
                 throw new UnsupportedSchemaVersionException(BuildRun.CurrentSchemaVersion, schemaVersion);
             }
 
-            return root.Deserialize<BuildRun>(BuildAnalyticsJson.Options)
+            var run = root.Deserialize<BuildRun>(BuildAnalyticsJson.Options)
                 ?? throw new CorruptRunFileException(runId);
+
+            if (run.Id <= 0 || run.Id != runId)
+            {
+                // R17: a valid-shaped payload whose id is missing or disagrees with the directory key is corrupt.
+                throw new CorruptRunFileException(runId);
+            }
+
+            return run;
         }
         catch (JsonException exception)
         {
@@ -81,7 +98,7 @@ public sealed class FileRunStore : IRunStore
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!int.TryParse(Path.GetFileName(directory), NumberStyles.None, CultureInfo.InvariantCulture, out var id))
+            if (!int.TryParse(Path.GetFileName(directory), NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id <= 0)
             {
                 continue;
             }

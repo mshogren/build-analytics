@@ -1,3 +1,4 @@
+using System.Globalization;
 using BuildAnalytics.App.Storage;
 using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
@@ -193,12 +194,166 @@ public sealed class FileManifestStoreTests
         Assert.Null(await reader.TryReadAsync(CancellationToken.None));
     }
 
-    private static Manifest SampleManifest()
+    [Fact]
+    public async Task Quarantine_DoesNotOverwriteExistingQuarantineFile()
+    {
+        using var root = new TempOutputRoot();
+        var preexisting = Path.Combine(root.Path, "manifest.corrupt-pre-existing.json");
+        await File.WriteAllTextAsync(preexisting, "old", CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), "{ not json", CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        Assert.Null(await store.TryReadAsync(CancellationToken.None));
+
+        Assert.True(File.Exists(preexisting));
+        Assert.Equal("old", await File.ReadAllTextAsync(preexisting, CancellationToken.None));
+        Assert.Equal(2, Directory.GetFiles(root.Path, "manifest.corrupt-*.json").Length);
+    }
+
+    [Fact]
+    public async Task Quarantine_PreservesRawBytes()
+    {
+        using var root = new TempOutputRoot();
+        const string corrupt = "{ broken json without closing";
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), corrupt, CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        Assert.Null(await store.TryReadAsync(CancellationToken.None));
+
+        var quarantine = Assert.Single(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+        Assert.Equal(corrupt, await File.ReadAllTextAsync(quarantine, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Quarantine_DoesNotTouchExistingRuns()
+    {
+        using var root = new TempOutputRoot();
+        var runStore = new FileRunStore(root.Path, new PhysicalFileOperations());
+        var run = TestRuns.Create(id: 11);
+        await runStore.WriteAsync(run, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), "{ not json", CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        Assert.Null(await store.TryReadAsync(CancellationToken.None));
+
+        Assert.Equal(run, await runStore.TryReadAsync(11, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AfterQuarantine_NextCommitStartsCursorNull_AndRescanUpserts()
+    {
+        using var root = new TempOutputRoot();
+        var runStore = new FileRunStore(root.Path, new PhysicalFileOperations());
+        await runStore.WriteAsync(TestRuns.Create(id: 11, buildNumber: "first"), CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), "{ not json", CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        Assert.Null(await store.TryReadAsync(CancellationToken.None));
+        Assert.Equal([11], await runStore.ListRunIdsAsync(CancellationToken.None));
+
+        var rebuilt = new Manifest(
+            Manifest.CurrentSchemaVersion, "fp", ManifestStatus.InProgress, null,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, null, [], [], []);
+        await store.CommitAsync(rebuilt, CancellationToken.None);
+        await runStore.WriteAsync(TestRuns.Create(id: 11, buildNumber: "second"), CancellationToken.None);
+
+        var read = await store.TryReadAsync(CancellationToken.None);
+        Assert.Null(read!.Cursor);
+        Assert.Equal([11], await runStore.ListRunIdsAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public void Lock_FilePathIsManifestLock()
+    {
+        using var root = new TempOutputRoot();
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+
+        Assert.True(File.Exists(Path.Combine(root.Path, "manifest.lock")));
+    }
+
+    [Fact]
+    public async Task Lock_ReleasedAfterWriteFailure()
+    {
+        using var root = new TempOutputRoot();
+        var failing = new RecordingFileOperations(
+            new PhysicalFileOperations(),
+            (operation, path) => operation == FileOperation.Rename && path.EndsWith("manifest.json", StringComparison.Ordinal)
+                ? new IOException("injected")
+                : null);
+
+        var first = new FileManifestStore(root.Path, failing);
+        await Assert.ThrowsAsync<IOException>(() => first.CommitAsync(SampleManifest(), CancellationToken.None));
+        first.Dispose();
+
+        using var second = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        Assert.NotNull(second);
+    }
+
+    [Fact]
+    public void StaleLock_DeadPid_IsReclaimed()
+    {
+        using var root = new TempOutputRoot();
+        File.WriteAllText(Path.Combine(root.Path, "manifest.lock"), "999999\n2020-01-01T00:00:00.0000000+00:00");
+
+        using (var store = new FileManifestStore(root.Path, new PhysicalFileOperations()))
+        {
+            Assert.NotNull(store);
+        }
+
+        var content = File.ReadAllText(Path.Combine(root.Path, "manifest.lock"));
+        Assert.Contains(Environment.ProcessId.ToString(CultureInfo.InvariantCulture), content, StringComparison.Ordinal);
+        Assert.DoesNotContain("999999", content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CommitAsync_Overwrite_Atomic_PreservesPriorOnFailure()
+    {
+        using var root = new TempOutputRoot();
+
+        using (var initial = new FileManifestStore(root.Path, new PhysicalFileOperations()))
+        {
+            await initial.CommitAsync(SampleManifest(cursor: "a"), CancellationToken.None);
+        }
+
+        var failing = new RecordingFileOperations(
+            new PhysicalFileOperations(),
+            (operation, path) => operation == FileOperation.Rename && path.EndsWith("manifest.json", StringComparison.Ordinal)
+                ? new IOException("injected")
+                : null);
+
+        using (var store = new FileManifestStore(root.Path, failing))
+        {
+            await Assert.ThrowsAsync<IOException>(() => store.CommitAsync(SampleManifest(cursor: "b"), CancellationToken.None));
+        }
+
+        using var reader = FileManifestStore.OpenReadOnly(root.Path);
+        var read = await reader.TryReadAsync(CancellationToken.None);
+        Assert.Equal("a", read!.Cursor);
+    }
+
+    [Fact]
+    public async Task Store_InjectsNoPatOrAbsolutePath_Itself()
+    {
+        using var root = new TempOutputRoot();
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        var manifest = new Manifest(
+            Manifest.CurrentSchemaVersion, "fp", ManifestStatus.InProgress, null,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, "boom", [], [], []);
+
+        await store.CommitAsync(manifest, CancellationToken.None);
+
+        var text = await File.ReadAllTextAsync(Path.Combine(root.Path, "manifest.json"), CancellationToken.None);
+        Assert.Contains("boom", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(root.Path, text, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"pat\"", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Manifest SampleManifest(string cursor = "cursor-1")
         => new(
             Manifest.CurrentSchemaVersion,
             "fp-1",
             ManifestStatus.InProgress,
-            "cursor-1",
+            cursor,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch.AddMinutes(1),
             null,

@@ -2,7 +2,7 @@ using BuildAnalytics.App.Storage;
 
 namespace BuildAnalytics.Tests.Storage;
 
-internal enum FileOperation
+public enum FileOperation
 {
     WriteTemp,
     FlushToDisk,
@@ -10,44 +10,50 @@ internal enum FileOperation
 }
 
 /// <summary>
-/// Wraps a real <see cref="IFileOperations"/> and records calls. An optional failure
-/// factory throws deterministically between the atomic-write stages; an optional
-/// delegate can block (F10 seam).
+/// Wraps a real <see cref="IFileOperations"/> and records calls. A failure factory throws
+/// deterministically BEFORE delegating; an after-delegate runs AFTER the real operation
+/// (used to simulate a crash that leaves the renamed target complete). F10 seam.
 /// </summary>
 internal sealed class RecordingFileOperations : IFileOperations
 {
     private readonly IFileOperations _inner;
     private readonly Func<FileOperation, string, Exception?>? _failure;
     private readonly Action<FileOperation, string>? _beforeDelegate;
+    private readonly Action<FileOperation, string>? _afterDelegate;
 
     public RecordingFileOperations(
         IFileOperations inner,
         Func<FileOperation, string, Exception?>? failure = null,
-        Action<FileOperation, string>? beforeDelegate = null)
+        Action<FileOperation, string>? beforeDelegate = null,
+        Action<FileOperation, string>? afterDelegate = null)
     {
         _inner = inner;
         _failure = failure;
         _beforeDelegate = beforeDelegate;
+        _afterDelegate = afterDelegate;
     }
 
     public List<(FileOperation Operation, string Path)> Calls { get; } = [];
 
-    public Task WriteTempAsync(string path, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
+    public async Task WriteTempAsync(string path, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
     {
         Record(FileOperation.WriteTemp, path);
-        return _inner.WriteTempAsync(path, content, cancellationToken);
+        await _inner.WriteTempAsync(path, content, cancellationToken);
+        After(FileOperation.WriteTemp, path);
     }
 
-    public Task FlushToDiskAsync(string path, CancellationToken cancellationToken)
+    public async Task FlushToDiskAsync(string path, CancellationToken cancellationToken)
     {
         Record(FileOperation.FlushToDisk, path);
-        return _inner.FlushToDiskAsync(path, cancellationToken);
+        await _inner.FlushToDiskAsync(path, cancellationToken);
+        After(FileOperation.FlushToDisk, path);
     }
 
-    public Task RenameAsync(string sourcePath, string destinationPath, CancellationToken cancellationToken)
+    public async Task RenameAsync(string sourcePath, string destinationPath, CancellationToken cancellationToken)
     {
         Record(FileOperation.Rename, destinationPath);
-        return _inner.RenameAsync(sourcePath, destinationPath, cancellationToken);
+        await _inner.RenameAsync(sourcePath, destinationPath, cancellationToken);
+        After(FileOperation.Rename, destinationPath);
     }
 
     private void Record(FileOperation operation, string path)
@@ -62,4 +68,6 @@ internal sealed class RecordingFileOperations : IFileOperations
             throw failure;
         }
     }
+
+    private void After(FileOperation operation, string path) => _afterDelegate?.Invoke(operation, path);
 }

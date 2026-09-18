@@ -37,6 +37,15 @@ public sealed class ManifestCompatibilityTests
         Assert.DoesNotContain(Path.DirectorySeparatorChar.ToString(), exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void EnsureCompatible_NullArgs_Throw()
+    {
+        var manifest = ManifestWith("a");
+
+        Assert.Throws<ArgumentNullException>(() => ManifestCompatibility.EnsureCompatible(null!, "a", []));
+        Assert.Throws<ArgumentNullException>(() => ManifestCompatibility.EnsureCompatible(manifest, "a", null!));
+    }
+
     private static Manifest ManifestWith(string fingerprint)
         => new(
             Manifest.CurrentSchemaVersion,
