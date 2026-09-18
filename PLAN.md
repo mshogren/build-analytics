@@ -99,9 +99,10 @@ seed; `Retry-After` honored; transient retried / permanent fails fast;
 exhaustion throws typed error; cancellation mid-backoff stops; retried detail
 fetch stays idempotent.
 
-**D — timing (pure).** Durations from timestamps; missing/skewed → null;
-averages ignore nulls; UTC monthly grouping + unknown bucket; wait > 5 min
-strictly > 300; case-insensitive counts; purity guard (no ambient clock or IO).
+**D — timing (pure).** Durations from timestamps as raw seconds; missing/skewed →
+null; averages ignore nulls and round only at output; UTC monthly grouping +
+`(unknown)` bucket sorted last; wait > 5 min strictly > 300 on raw seconds;
+case-insensitive counts; purity guard (no ambient clock or IO).
 
 **E — reporting/security.** Reporting never touches the network; no absolute
 local paths in output; PAT never logged or written; `.gitignore` excludes
@@ -128,6 +129,15 @@ inside pure logic; no shared mutable output root across tests.
 6. **CLI.** Breaking rewrite accepted; no migration note required.
 7. **Corrupt manifest.** Quarantine and rebuild; replay list pages, upsert files.
 8. **Schema version.** `schemaVersion: 1`; newer on disk is a typed failure.
+9. **Rounding.** The domain stores **raw seconds** (full precision). Rounding to
+   2dp happens only when emitting aggregates/report values. The `>300s` wait
+   threshold compares raw seconds.
+10. **Month ordering.** Real UTC months ascending; `(unknown)` sorts **last**.
+11. **Month anchor.** Grouping anchor is `QueueTime` only; no `StartTime`
+    fallback. Absent `QueueTime` → `(unknown)` bucket.
+12. **Monthly metrics.** `RunCount`, `Succeeded`, `Failed`, `PartiallySucceeded`,
+    `Canceled`, `NotStarted`, `WaitOverFiveMin`, and the three averages.
+    "Seconds only" (Q4) means no percentiles/cost — not dropping these counts.
 
 ## Handoff
 
