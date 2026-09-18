@@ -150,6 +150,7 @@ public sealed class ReportingServiceTests
 
         Assert.Equal(1, result.RunsRead);
         Assert.False(File.Exists(Path.Combine(root.Path, "manifest.lock")));
+        Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
 
         var afterPaths = Directory
             .GetFileSystemEntries(root.Path, "*", SearchOption.AllDirectories)

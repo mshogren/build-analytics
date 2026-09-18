@@ -200,6 +200,39 @@ public sealed class AdoBuildSourceTests
         Assert.Equal(0, handler.RequestCount);
     }
 
+    [Fact]
+    public async Task Malformed_list_body_is_wrapped_as_AdoRequestException()
+    {
+        var (source, handler, _, _) = Create();
+        handler.EnqueueJson("{ not json");
+
+        await Assert.ThrowsAsync<AdoRequestException>(() => source.ListAsync(Query(), null, default));
+    }
+
+    [Fact]
+    public async Task Detail_id_mismatch_throws_InvalidDetailPayloadException()
+    {
+        var (source, handler, _, _) = Create();
+        handler.EnqueueJson("""{ "id": 6, "definition": { "id": 5, "name": "ci" } }""");
+
+        var exception = await Assert.ThrowsAsync<InvalidDetailPayloadException>(
+            () => source.GetDetailAsync(Query(), 5, default));
+
+        Assert.Equal(5, exception.RequestedRunId);
+        Assert.Equal(6, exception.ReturnedRunId);
+    }
+
+    [Fact]
+    public async Task Resolve_rejects_a_definition_token_cycle()
+    {
+        var (source, handler, _, _) = Create();
+        handler.EnqueueJson("""{ "value": [ { "id": 5, "name": "ci", "path": "\\CI" } ] }""", continuationToken: "t1");
+        handler.EnqueueJson("""{ "value": [ { "id": 6, "name": "other", "path": "\\X" } ] }""", continuationToken: "t1");
+
+        await Assert.ThrowsAsync<InvalidContinuationTokenException>(
+            () => source.ResolveAsync(Query(definitionNames: ["ci-*"]), ["ci-*"], default));
+    }
+
     private static BuildQuery Query(IReadOnlyList<string>? definitionNames = null)
         => new(
             "https://dev.azure.com/org",

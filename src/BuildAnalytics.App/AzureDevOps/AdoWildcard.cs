@@ -18,7 +18,7 @@ public static class AdoWildcard
             .Replace("\\?", ".", StringComparison.Ordinal);
 
         return new Regex(
-            $"^{escaped}$",
+            $"\\A{escaped}\\z",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
             TimeSpan.FromSeconds(1));
     }

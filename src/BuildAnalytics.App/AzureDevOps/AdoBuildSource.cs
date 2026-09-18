@@ -60,7 +60,7 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposa
             .SendAsync(() => CreateRequest(uri), path, AdoRequestKind.List, runId: null, continuationToken, cancellationToken)
             .ConfigureAwait(false);
 
-        using var document = JsonDocument.Parse(response.Body);
+        using var document = ParseBody(response.Body, path);
         var fetchedAt = _timeProvider.GetUtcNow();
         var runs = new List<BuildRun>();
 
@@ -93,8 +93,16 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposa
             .SendAsync(() => CreateRequest(uri), path, AdoRequestKind.Detail, runId, continuationToken: null, cancellationToken)
             .ConfigureAwait(false);
 
-        using var document = JsonDocument.Parse(response.Body);
-        return AdoJsonMapper.MapBuild(document.RootElement, RunSource.Detail, _timeProvider.GetUtcNow());
+        using var document = ParseBody(response.Body, path);
+        var run = AdoJsonMapper.MapBuild(document.RootElement, RunSource.Detail, _timeProvider.GetUtcNow());
+
+        if (run.Id <= 0 || run.Id != runId)
+        {
+            // ADR-86/90: an id mismatch is a protocol anomaly, not a 404.
+            throw new InvalidDetailPayloadException(runId, run.Id);
+        }
+
+        return run;
     }
 
     public async Task<IReadOnlyList<int>> ResolveAsync(
@@ -114,6 +122,7 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposa
         }
 
         var definitions = new List<(int Id, string? Name, string? Path)>();
+        var seenTokens = new HashSet<string>(StringComparer.Ordinal);
         string? continuationToken = null;
 
         do
@@ -125,7 +134,7 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposa
                 .SendAsync(() => CreateRequest(uri), path, AdoRequestKind.List, runId: null, continuationToken, cancellationToken)
                 .ConfigureAwait(false);
 
-            using var document = JsonDocument.Parse(response.Body);
+            using var document = ParseBody(response.Body, path);
             foreach (var item in AdoJsonMapper.ExtractItems(document.RootElement))
             {
                 var id = AdoJsonMapper.GetInt(item, "id");
@@ -135,7 +144,14 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposa
                 }
             }
 
-            continuationToken = response.ContinuationToken;
+            // ADR-85: any revisited token (including a >1 page cycle) is a token failure.
+            var next = response.ContinuationToken;
+            if (next is not null && !seenTokens.Add(next))
+            {
+                throw new InvalidContinuationTokenException(next);
+            }
+
+            continuationToken = next;
         }
         while (continuationToken is not null);
 
@@ -158,6 +174,19 @@ public sealed class AdoBuildSource : IBuildSource, IDefinitionResolver, IDisposa
         var sorted = ids.ToArray();
         Array.Sort(sorted);
         return sorted;
+    }
+
+    private static JsonDocument ParseBody(string body, string requestPath)
+    {
+        try
+        {
+            return JsonDocument.Parse(body);
+        }
+        catch (JsonException exception)
+        {
+            // ADR-84: classify a malformed body instead of letting it escape.
+            throw new AdoRequestException(requestPath, exception);
+        }
     }
 
     private static HttpRequestMessage CreateRequest(Uri uri)

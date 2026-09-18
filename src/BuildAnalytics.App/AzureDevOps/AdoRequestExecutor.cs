@@ -205,9 +205,16 @@ public sealed class AdoRequestExecutor
     }
 
     private static string? ReadContinuationToken(HttpResponseMessage response)
-        => response.Headers.TryGetValues(ContinuationTokenHeader, out var values)
-            ? values.FirstOrDefault()
-            : null;
+    {
+        if (!response.Headers.TryGetValues(ContinuationTokenHeader, out var values))
+        {
+            return null;
+        }
+
+        // ADR-87: a null/whitespace header means no token, not a real empty token.
+        var token = values.FirstOrDefault();
+        return string.IsNullOrWhiteSpace(token) ? null : token;
+    }
 
     private static string? ReadCorrelationId(HttpResponseMessage response)
         => FirstHeader(response, "x-ms-request-id")

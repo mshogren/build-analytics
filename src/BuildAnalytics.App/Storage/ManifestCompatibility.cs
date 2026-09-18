@@ -9,12 +9,18 @@ namespace BuildAnalytics.App.Storage;
 /// </summary>
 public static class ManifestCompatibility
 {
-    public static void EnsureCompatible(Manifest manifest, string expectedFingerprint, IReadOnlyCollection<int> existingRunIds)
+    public static void EnsureCompatible(
+        Manifest manifest,
+        string expectedFingerprint,
+        IReadOnlyCollection<int> existingRunIds,
+        bool requireMatch = false)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(existingRunIds);
 
-        if (existingRunIds.Count > 0 &&
+        // ADR-92: a completed root is bound to its query regardless of runs/. Otherwise
+        // only a non-empty runs/ with a different fingerprint is a conflict (ADR-3/66).
+        if ((requireMatch || existingRunIds.Count > 0) &&
             !string.Equals(manifest.Fingerprint, expectedFingerprint, StringComparison.Ordinal))
         {
             throw new FingerprintMismatchException(expectedFingerprint, manifest.Fingerprint);

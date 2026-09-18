@@ -444,6 +444,46 @@ truncate.
     **manifest** schema mismatch stays fatal (ADR-8), and **reporting** still
     aborts on an unsupported run schema (ADR-77) because it has no network and
     cannot repair; skipping would yield a confidently incomplete report.
+84. **Unexpected exceptions fail the run.** After the OCE rethrow, the pipeline
+    catches **all** exceptions, persists `Manifest.Status = Failed` with a
+    sanitized `lastError`, and returns `Failed` without advancing the cursor.
+    The adapter also wraps a malformed body (`JsonException`) in a typed error so
+    it is classified rather than escaping.
+85. **Token-cycle detection.** All seen continuation tokens are tracked; any
+    revisit (including a period > 1 cycle) is treated as repeated/invalid —
+    restart once from `cursor=null`, then fail. The same guard applies to
+    definition-resolution paging.
+86. **Detail identity.** A detail response whose id differs from the requested
+    `runId` (or is non-positive) is a protocol anomaly, not a 404: it aborts with
+    `Failed` and is never treated as a per-run skip.
+87. **Empty continuation header** means “no token”; a null or whitespace
+    `x-ms-continuationtoken` must not be echoed as a real token.
+88. **Fingerprint before short-circuit** (amends ADR-71). Order: read manifest →
+    resolve ids → fingerprint → `ManifestCompatibility.EnsureCompatible` → then,
+    if `completed`, return `ShortCircuited`. A completed root still issues no
+    list calls, but a *different* query on a non-empty root is a typed error
+    rather than a silent no-op.
+89. **Pass-written runs join the skip set** (amends the earlier exclusion, which
+    was a regression). After a successful `WriteAsync`, the written run is added
+    to the in-memory skip set so a same-pass re-list — e.g. a token restart
+    re-listing from `cursor=null` — skips it with no re-read, no re-fetch, and no
+    detail→list downgrade. Without this, a restart triggers a full duplicate
+    pass over every already-written run.
+90. **`InvalidDetailPayloadException(requestedRunId, returnedRunId)`** joins
+    `Core.Errors` for a detail body whose id does not match the request.
+91. **Unexpected-failure rule.** Any non-cancellation exception in `RunAsync`
+    triggers a **best-effort** `CommitAsync(Status = Failed, sanitized lastError)`;
+    if that succeeds, return `Failed` without advancing. If the Failed commit
+    itself throws, propagate. `OperationCanceledException` is rethrown with no
+    commit. (This replaces the earlier “commit failure propagates” rule.)
+92. **Completed roots are bound to their query.** For a `completed` manifest a
+    fingerprint mismatch is a typed error **regardless** of `runs/`, even when the
+    root is empty. The empty-runs allowance applies only when no manifest exists
+    or the manifest is not completed.
+93. **Seen-token set resets on restart.** The set must **not** persist across the
+    single restart, because the first post-restart token is normally one already
+    seen — persisting it would fail the restart immediately and remove the
+    recovery path. Termination comes from the one-restart bound.
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,

@@ -150,12 +150,39 @@ public sealed class AdoRequestException : Exception
         CorrelationId = correlationId;
     }
 
+    /// <summary>A 2xx response whose body could not be parsed (ADR-84).</summary>
+    public AdoRequestException(string requestPath, Exception? innerException)
+        : base(AdoErrorText.Format("Azure DevOps returned a malformed response", requestPath, null), innerException)
+    {
+        StatusCode = 0;
+        RequestPath = requestPath;
+        CorrelationId = null;
+    }
+
     public int StatusCode { get; }
 
     /// <summary>Sanitized relative request path (no host or query string).</summary>
     public string RequestPath { get; }
 
     public string? CorrelationId { get; }
+}
+
+/// <summary>
+/// A detail response body identified a different (or non-positive) run than requested.
+/// A protocol anomaly, not a 404, so it aborts the run rather than skipping it (ADR-86/90).
+/// </summary>
+public sealed class InvalidDetailPayloadException : Exception
+{
+    public InvalidDetailPayloadException(int requestedRunId, int returnedRunId)
+        : base($"Azure DevOps returned run {returnedRunId} for detail request {requestedRunId}.")
+    {
+        RequestedRunId = requestedRunId;
+        ReturnedRunId = returnedRunId;
+    }
+
+    public int RequestedRunId { get; }
+
+    public int ReturnedRunId { get; }
 }
 
 /// <summary>

@@ -19,9 +19,9 @@ public sealed record RetrievalResult(
     int? RemainingBudget);
 
 /// <summary>
-/// List -> detail-if-needed -> durable run write -> manifest checkpoint (ADR-4/66..71).
-/// Owns paging, repeated/invalid token restart, and terminal status; the adapter owns
-/// the run budget and HTTP retry.
+/// List -> detail-if-needed -> durable run write -> manifest checkpoint (ADR-4/66..93).
+/// Owns paging, token-cycle detection, and terminal status; the adapter owns the run
+/// budget and HTTP retry.
 /// </summary>
 public sealed class RetrievalPipeline(
     IBuildSource source,
@@ -36,12 +36,26 @@ public sealed class RetrievalPipeline(
         cancellationToken.ThrowIfCancellationRequested();
 
         var existing = await manifests.TryReadAsync(cancellationToken).ConfigureAwait(false);
-        if (existing is { Status: ManifestStatus.Completed })
+        var isCompleted = existing is { Status: ManifestStatus.Completed };
+
+        // ADR-88: resolve + fingerprint + compatibility happen BEFORE the completed short-circuit,
+        // so a different query on a completed root is a typed error, not a silent no-op.
+        var resolvedIds = await resolver.ResolveAsync(query, query.DefinitionNames, cancellationToken).ConfigureAwait(false);
+        var effective = query with { ResolvedDefinitionIds = resolvedIds };
+        var fingerprint = BuildQueryFingerprint.Compute(effective);
+
+        var existingRunIds = await runs.ListRunIdsAsync(cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
         {
-            // ADR-71: a completed manifest short-circuits before resolving ids or calling the source.
+            // ADR-92: a completed root is query-bound even with an empty runs/.
+            ManifestCompatibility.EnsureCompatible(existing, fingerprint, existingRunIds, requireMatch: isCompleted);
+        }
+
+        if (isCompleted)
+        {
             return new RetrievalResult(
                 ManifestStatus.Completed,
-                existing.Cursor,
+                existing!.Cursor,
                 ShortCircuited: true,
                 PagesFetched: 0,
                 RunsWritten: 0,
@@ -51,83 +65,90 @@ public sealed class RetrievalPipeline(
                 RemainingBudget: null);
         }
 
-        var resolvedIds = await resolver.ResolveAsync(query, query.DefinitionNames, cancellationToken).ConfigureAwait(false);
-        var effective = query with { ResolvedDefinitionIds = resolvedIds };
-        var fingerprint = BuildQueryFingerprint.Compute(effective);
-
-        var existingRunIds = await runs.ListRunIdsAsync(cancellationToken).ConfigureAwait(false);
-        if (existing is not null)
-        {
-            // ADR-3/66: only a non-empty runs/ with a different fingerprint is a conflict.
-            ManifestCompatibility.EnsureCompatible(existing, fingerprint, existingRunIds);
-        }
-
         var createdAt = existing?.CreatedAt ?? clock.GetUtcNow();
         var failedRunIds = new List<int>(existing?.FailedRunIds ?? []);
         var existingIdSet = new HashSet<int>(existingRunIds);
+        var writtenThisPass = new HashSet<int>();
         var cursor = existing?.Cursor;
-
-        // ADR-68: a fingerprinted, resumable root exists before the first list call.
-        await CommitAsync(ManifestStatus.InProgress, cursor, lastError: null).ConfigureAwait(false);
 
         var pagesFetched = 0;
         var runsWritten = 0;
-        var restarted = false;
 
-        while (true)
+        async Task<RetrievalResult> PauseAsync(PipelinePausedException exception)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            // ADR-62: paused is resumable and never completed; the reason and typed
+            // RetryAfter/RemainingBudget are surfaced structurally and in lastError.
+            await CommitAsync(ManifestStatus.Paused, cursor, DescribePause(exception)).ConfigureAwait(false);
+            return Result(ManifestStatus.Paused, cursor, pagesFetched, runsWritten, failedRunIds, exception.Reason, exception.RetryAfter, exception.RemainingBudget);
+        }
 
-            BuildPage page;
-            try
+        async Task CommitAsync(ManifestStatus status, string? cursor, string? lastError)
+        {
+            var manifest = new Manifest(
+                Manifest.CurrentSchemaVersion,
+                fingerprint,
+                status,
+                cursor,
+                createdAt,
+                clock.GetUtcNow(),
+                lastError,
+                failedRunIds,
+                query.DefinitionIds,
+                query.DefinitionNames);
+
+            await manifests.CommitAsync(manifest, cancellationToken).ConfigureAwait(false);
+        }
+
+        try
+        {
+            // ADR-68: a fingerprinted, resumable root exists before the first list call.
+            await CommitAsync(ManifestStatus.InProgress, cursor, lastError: null).ConfigureAwait(false);
+
+            var restarted = false;
+            var seenTokens = new HashSet<string>(StringComparer.Ordinal);
+
+            while (true)
             {
-                page = await source.ListAsync(effective, cursor, cancellationToken).ConfigureAwait(false);
-            }
-            catch (InvalidContinuationTokenException exception)
-            {
-                if (restarted)
+                cancellationToken.ThrowIfCancellationRequested();
+
+                BuildPage page;
+                try
                 {
-                    // ADR-69: never loop; a second invalid token fails the run.
-                    await CommitAsync(ManifestStatus.Failed, cursor, exception.Message).ConfigureAwait(false);
-                    return Result(ManifestStatus.Failed, cursor, pagesFetched, runsWritten, failedRunIds);
+                    page = await source.ListAsync(effective, cursor, cancellationToken).ConfigureAwait(false);
+                }
+                catch (InvalidContinuationTokenException exception)
+                {
+                    if (restarted)
+                    {
+                        await CommitAsync(ManifestStatus.Failed, cursor, exception.Message).ConfigureAwait(false);
+                        return Result(ManifestStatus.Failed, cursor, pagesFetched, runsWritten, failedRunIds);
+                    }
+
+                    restarted = true;
+                    seenTokens.Clear();
+                    cursor = null;
+                    await CommitAsync(ManifestStatus.InProgress, cursor: null, lastError: null).ConfigureAwait(false);
+                    continue;
                 }
 
-                restarted = true;
-                cursor = null;
-                await CommitAsync(ManifestStatus.InProgress, cursor: null, lastError: null).ConfigureAwait(false);
-                continue;
-            }
-            catch (PipelinePausedException exception)
-            {
-                return await PauseAsync(cursor, pagesFetched, runsWritten, failedRunIds, exception).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // ADR-70: leave the last committed status; no advance, no cleanup commit.
-                throw;
-            }
-            catch (Exception exception) when (IsRecoverable(exception))
-            {
-                await CommitAsync(ManifestStatus.Failed, cursor, DescribeError(exception)).ConfigureAwait(false);
-                return Result(ManifestStatus.Failed, cursor, pagesFetched, runsWritten, failedRunIds);
-            }
+                pagesFetched++;
 
-            pagesFetched++;
-
-            try
-            {
                 foreach (var listed in page.Runs)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    // ADR-7/R11: on a rebuild/replay, never re-fetch detail or overwrite an
-                    // on-disk file the active policy already accepts (that would downgrade a
-                    // detail source back to a thin list row).
+                    // ADR-89: a run written earlier in this pass is skipped with no re-read/re-fetch/rewrite.
+                    if (writtenThisPass.Contains(listed.Id))
+                    {
+                        continue;
+                    }
+
+                    // ADR-7/R11: on-disk files the active policy already accepts are left untouched
+                    // (never downgrade detail -> list). Corrupt/stale/unreadable files are re-fetched.
                     if (existingIdSet.Contains(listed.Id))
                     {
-                        var existingRun = await TryReadExistingRunAsync(listed.Id, cancellationToken).ConfigureAwait(false);
-                        if (existingRun is not null
-                            && !DetailPolicyEvaluator.NeedsDetail(existingRun, effective.DetailPolicy))
+                        var onDisk = await TryReadExistingRunAsync(listed.Id, cancellationToken).ConfigureAwait(false);
+                        if (onDisk is not null && !DetailPolicyEvaluator.NeedsDetail(onDisk, effective.DetailPolicy))
                         {
                             continue;
                         }
@@ -154,86 +175,51 @@ public sealed class RetrievalPipeline(
 
                     await runs.WriteAsync(run, cancellationToken).ConfigureAwait(false);
                     runsWritten++;
+                    writtenThisPass.Add(run.Id);
                 }
-            }
-            catch (PipelinePausedException exception)
-            {
-                return await PauseAsync(cursor, pagesFetched, runsWritten, failedRunIds, exception).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception exception) when (IsRecoverable(exception))
-            {
-                // ADR-67: a run write that fails never advances the checkpoint.
-                await CommitAsync(ManifestStatus.Failed, cursor, DescribeError(exception)).ConfigureAwait(false);
-                return Result(ManifestStatus.Failed, cursor, pagesFetched, runsWritten, failedRunIds);
-            }
 
-            var next = page.ContinuationToken;
-            if (next is not null && string.Equals(next, cursor, StringComparison.Ordinal))
-            {
-                if (restarted)
+                var next = page.ContinuationToken;
+                if (next is not null && !seenTokens.Add(next))
                 {
-                    // ADR-69: a second repeated token fails the run.
-                    await CommitAsync(ManifestStatus.Failed, cursor, "Azure DevOps returned a repeated continuation token.").ConfigureAwait(false);
-                    return Result(ManifestStatus.Failed, cursor, pagesFetched, runsWritten, failedRunIds);
+                    // ADR-85: any revisited token (including a >1 page cycle) is a token failure.
+                    if (restarted)
+                    {
+                        await CommitAsync(ManifestStatus.Failed, cursor, "Azure DevOps returned a repeated continuation token.").ConfigureAwait(false);
+                        return Result(ManifestStatus.Failed, cursor, pagesFetched, runsWritten, failedRunIds);
+                    }
+
+                    restarted = true;
+                    seenTokens.Clear();
+                    cursor = null;
+                    await CommitAsync(ManifestStatus.InProgress, cursor: null, lastError: null).ConfigureAwait(false);
+                    continue;
                 }
 
-                restarted = true;
-                cursor = null;
-                await CommitAsync(ManifestStatus.InProgress, cursor: null, lastError: null).ConfigureAwait(false);
-                continue;
+                if (next is null)
+                {
+                    // ADR-67: exhausted token with failures is still completed.
+                    await CommitAsync(ManifestStatus.Completed, cursor: null, lastError: null).ConfigureAwait(false);
+                    return Result(ManifestStatus.Completed, cursor: null, pagesFetched, runsWritten, failedRunIds);
+                }
+
+                cursor = next;
+                await CommitAsync(ManifestStatus.InProgress, cursor, lastError: null).ConfigureAwait(false);
             }
-
-            if (next is null)
-            {
-                // ADR-67: exhausted token with failures is still completed.
-                await CommitAsync(ManifestStatus.Completed, cursor: null, lastError: null).ConfigureAwait(false);
-                return Result(ManifestStatus.Completed, cursor: null, pagesFetched, runsWritten, failedRunIds);
-            }
-
-            cursor = next;
-            await CommitAsync(ManifestStatus.InProgress, cursor, lastError: null).ConfigureAwait(false);
         }
-
-        async Task<RetrievalResult> PauseAsync(
-            string? pauseCursor,
-            int pages,
-            int written,
-            IReadOnlyList<int> failed,
-            PipelinePausedException exception)
+        catch (PipelinePausedException exception)
         {
-            // ADR-62: paused is resumable and never completed; the reason and typed
-            // RetryAfter/RemainingBudget are surfaced structurally and in lastError.
-            await CommitAsync(ManifestStatus.Paused, pauseCursor, DescribePause(exception)).ConfigureAwait(false);
-            return Result(
-                ManifestStatus.Paused,
-                pauseCursor,
-                pages,
-                written,
-                failed,
-                exception.Reason,
-                exception.RetryAfter,
-                exception.RemainingBudget);
+            return await PauseAsync(exception).ConfigureAwait(false);
         }
-
-        async Task CommitAsync(ManifestStatus status, string? cursor, string? lastError)
+        catch (OperationCanceledException)
         {
-            var manifest = new Manifest(
-                Manifest.CurrentSchemaVersion,
-                fingerprint,
-                status,
-                cursor,
-                createdAt,
-                clock.GetUtcNow(),
-                lastError,
-                failedRunIds,
-                query.DefinitionIds,
-                query.DefinitionNames);
-
-            await manifests.CommitAsync(manifest, cancellationToken).ConfigureAwait(false);
+            // ADR-70: leave the last committed status; no advance, no cleanup commit.
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // ADR-84/91: any other failure aborts Failed with a best-effort sanitized commit.
+            await CommitAsync(ManifestStatus.Failed, cursor, DescribeError(exception)).ConfigureAwait(false);
+            return Result(ManifestStatus.Failed, cursor, pagesFetched, runsWritten, failedRunIds);
         }
     }
 
@@ -274,18 +260,11 @@ public sealed class RetrievalPipeline(
         int? remainingBudget = null)
         => new(status, cursor, ShortCircuited: false, pagesFetched, runsWritten, failedRunIds.ToArray(), pause, retryAfter, remainingBudget);
 
-    private static bool IsRecoverable(Exception exception)
-        => exception is RetryExhaustedException
-            or AdoRequestException
-            or StorageException
-            or IOException
-            or UnauthorizedAccessException;
-
     /// <summary>ADR-27: typed ADO messages are pre-sanitized; other failures stay type-only (no paths).</summary>
     private static string DescribeError(Exception exception)
         => exception switch
         {
-            AdoRequestException or RetryExhaustedException or InvalidContinuationTokenException or PipelinePausedException => exception.Message,
+            AdoRequestException or RetryExhaustedException or InvalidContinuationTokenException or InvalidDetailPayloadException or PipelinePausedException => exception.Message,
             _ => $"Retrieval failed: {exception.GetType().Name}."
         };
 

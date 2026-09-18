@@ -11,6 +11,17 @@ public sealed class AdoRequestExecutorTests
     private static readonly Uri RequestUri = new("https://dev.azure.com/org/project/_apis/build/builds");
 
     [Fact]
+    public async Task Empty_continuation_header_is_treated_as_no_token()
+    {
+        var (executor, handler, _) = Create();
+        handler.EnqueueJson("{}", continuationToken: "   ");
+
+        var response = await executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default);
+
+        Assert.Null(response.ContinuationToken);
+    }
+
+    [Fact]
     public async Task Success_returns_body_and_token_without_delays()
     {
         var (executor, handler, delays) = Create();

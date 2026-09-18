@@ -240,10 +240,10 @@ public sealed class RetrievalPipelineTests
     // ---- short-circuit / compatibility ----
 
     [Fact]
-    public async Task Completed_manifest_short_circuits_without_resolving_or_listing()
+    public async Task Completed_manifest_short_circuits_without_listing()
     {
-        var (pipeline, source, resolver, _, manifests, clock, _) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, failedRunIds: [7]);
+        var (pipeline, source, _, _, manifests, clock, _) = Create();
+        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(), failedRunIds: [7]);
 
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
 
@@ -251,9 +251,18 @@ public sealed class RetrievalPipelineTests
         Assert.Equal(ManifestStatus.Completed, result.Status);
         Assert.Equal("c1", result.Cursor);
         Assert.Equal([7], result.FailedRunIds);
-        Assert.Empty(resolver.Calls);
         Assert.Empty(source.ListCalls);
         Assert.Empty(manifests.Commits);
+    }
+
+    [Fact]
+    public async Task Completed_manifest_with_a_different_fingerprint_is_a_typed_error_even_when_empty()
+    {
+        var (pipeline, source, _, _, manifests, clock, _) = Create();
+        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: "other");
+
+        await Assert.ThrowsAsync<FingerprintMismatchException>(() => pipeline.RunAsync(Query(), CancellationToken.None));
+        Assert.Empty(source.ListCalls);
     }
 
     [Fact]
@@ -469,6 +478,83 @@ public sealed class RetrievalPipelineTests
         Assert.Single(manifests.Commits);
         Assert.Equal(ManifestStatus.InProgress, manifests.Commits[0].Status);
         Assert.Null(manifests.Commits[0].Cursor);
+    }
+
+    // ---- ADR-84..93 correctness ----
+
+    [Fact]
+    public async Task Restart_within_a_pass_does_not_refetch_or_rewrite_already_written_runs()
+    {
+        var (pipeline, source, _, runs, _, clock, _) = Create();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], "t1"));
+        source.Page("t1", new BuildPage([], "t1"));
+        source.Detail(1, DetailCompleteRun(1, clock));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Failed, result.Status);
+        Assert.Equal(1, result.RunsWritten);
+        Assert.Single(source.DetailCalls);
+        Assert.Single(runs.Writes);
+    }
+
+    [Fact]
+    public async Task Token_cycle_with_period_greater_than_one_restarts_once_then_fails()
+    {
+        var (pipeline, source, _, _, _, _, _) = Create();
+        source.Page(null, new BuildPage([], "t1"));
+        source.Page("t1", new BuildPage([], "t2"));
+        source.Page("t2", new BuildPage([], "t1"));
+
+        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Failed, result.Status);
+        Assert.Equal(
+            ["<start>", "t1", "t2", "<start>", "t1", "t2"],
+            source.ListCalls.Select(call => call.Token ?? "<start>"));
+    }
+
+    [Fact]
+    public async Task Invalid_detail_payload_aborts_failed_and_is_not_a_per_run_skip()
+    {
+        var (pipeline, source, _, runs, manifests, _, _) = Create();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], "t1"));
+        source.DetailThrows(1, new InvalidDetailPayloadException(1, 2));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Failed, result.Status);
+        Assert.Empty(runs.Writes);
+        Assert.Empty(result.FailedRunIds);
+        Assert.Equal(ManifestStatus.Failed, manifests.Commits[^1].Status);
+    }
+
+    [Fact]
+    public async Task Unexpected_exception_fails_the_run_and_persists_failed()
+    {
+        var (pipeline, source, _, runs, manifests, _, _) = Create();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], null));
+        runs.WriteFailures[1] = new InvalidOperationException("boom");
+
+        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Failed, result.Status);
+        Assert.Equal(ManifestStatus.Failed, manifests.Commits[^1].Status);
+        Assert.Contains("InvalidOperationException", manifests.Commits[^1].LastError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Checkpoint_commit_carries_failed_run_ids_with_the_cursor()
+    {
+        var (pipeline, source, _, _, manifests, _, _) = Create();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null), TestRuns.Create(id: 2, status: "inProgress")], "t1"));
+        source.DetailThrows(1, new RunNotFoundException(1));
+        source.Page("t1", new BuildPage([], null));
+
+        await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        var checkpoint = manifests.Commits.Single(commit => commit.Cursor == "t1");
+        Assert.Equal([1], checkpoint.FailedRunIds);
     }
 
     // ---- helpers ----

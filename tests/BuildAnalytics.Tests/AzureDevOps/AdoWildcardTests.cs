@@ -14,6 +14,14 @@ public sealed class AdoWildcardTests
     public void Wildcard_matches_anchored_and_case_insensitively(string pattern, string candidate, bool expected)
         => Assert.Equal(expected, AdoWildcard.ToRegex(pattern).IsMatch(candidate));
 
+    [Fact]
+    public void Anchoring_rejects_a_trailing_newline()
+    {
+        var matches = AdoWildcard.ToRegex("build").IsMatch("build\n");
+
+        Assert.False(matches);
+    }
+
     [Theory]
     [InlineData("a.b", "a.b", true)]
     [InlineData("a.b", "axb", false)]

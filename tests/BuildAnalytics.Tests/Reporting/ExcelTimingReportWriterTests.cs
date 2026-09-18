@@ -108,14 +108,19 @@ public sealed class ExcelTimingReportWriterTests
     }
 
     [Fact]
-    public void Raw_bytes_and_all_document_properties_contain_no_paths_or_pat()
+    public async Task Raw_bytes_and_all_document_properties_contain_no_paths_or_pat()
     {
-        var bytes = ExcelTimingReportWriter.BuildWorkbook(SampleSummary());
+        using var root = new TempOutputRoot();
+        var path = Path.Combine(root.Path, "timing-report.xlsx");
+        await new ExcelTimingReportWriter(path).WriteAsync(SampleSummary(), CancellationToken.None);
+
+        var bytes = await File.ReadAllBytesAsync(path, CancellationToken.None);
         var raw = System.Text.Encoding.Latin1.GetString(bytes);
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         Assert.DoesNotContain("/home", raw, StringComparison.Ordinal);
         Assert.DoesNotContain("AZDO_PAT", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(root.Path, raw, StringComparison.Ordinal);
         if (profile.Length > 0)
         {
             Assert.DoesNotContain(profile, raw, StringComparison.Ordinal);
@@ -129,13 +134,18 @@ public sealed class ExcelTimingReportWriterTests
                      properties.Subject,
                      properties.Comments,
                      properties.Keywords,
+                     properties.Category,
+                     properties.Status,
                      properties.Author,
-                     properties.LastModifiedBy
+                     properties.LastModifiedBy,
+                     properties.Company,
+                     properties.Manager
                  })
         {
             var text = value ?? string.Empty;
             Assert.DoesNotContain("/home", text, StringComparison.Ordinal);
             Assert.DoesNotContain("AZDO_PAT", text, StringComparison.Ordinal);
+            Assert.DoesNotContain(root.Path, text, StringComparison.Ordinal);
             if (profile.Length > 0)
             {
                 Assert.DoesNotContain(profile, text, StringComparison.Ordinal);
