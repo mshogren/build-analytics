@@ -2,7 +2,8 @@ namespace BuildAnalytics.Core.Ports;
 
 /// <summary>
 /// Delay seam used by retry/backoff so waits can be deterministic in tests.
-/// Timestamps use the BCL <see cref="TimeProvider"/> seam.
+/// This is Core's only timing seam: adapters own wall-clock timestamps
+/// (CreatedAt/UpdatedAt/FetchedAt) and any ambient time source.
 /// </summary>
 public interface IDelayScheduler
 {

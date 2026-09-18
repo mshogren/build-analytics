@@ -16,9 +16,25 @@ public sealed record TimingTotals(
 /// <summary>Rollup totals for one UTC month, or the unknown bucket.</summary>
 public sealed record MonthlyTimingSummary(string Month, TimingTotals Totals);
 
-/// <summary>Overall totals plus the per-month breakdown.</summary>
-public sealed record TimingSummary(TimingTotals Overall, IReadOnlyList<MonthlyTimingSummary> Months)
+/// <summary>
+/// Overall totals plus the per-month breakdown. <see cref="Months"/> is defensively copied,
+/// so callers cannot mutate this value object through the source collection.
+/// </summary>
+public sealed record TimingSummary
 {
+    public TimingSummary(TimingTotals overall, IReadOnlyList<MonthlyTimingSummary> months)
+    {
+        ArgumentNullException.ThrowIfNull(overall);
+        ArgumentNullException.ThrowIfNull(months);
+
+        Overall = overall;
+        Months = Array.AsReadOnly(months.ToArray());
+    }
+
+    public TimingTotals Overall { get; }
+
+    public IReadOnlyList<MonthlyTimingSummary> Months { get; }
+
     public bool Equals(TimingSummary? other)
         => other is not null && Overall == other.Overall && Months.SequenceEqual(other.Months);
 

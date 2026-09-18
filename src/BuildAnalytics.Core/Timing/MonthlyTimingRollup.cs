@@ -5,7 +5,9 @@ namespace BuildAnalytics.Core.Timing;
 
 /// <summary>
 /// Pure overall + monthly aggregation. Months are real UTC months ascending, with the
-/// unknown bucket last. Averages ignore nulls and are rounded to 2dp at rollup time.
+/// unknown bucket last. RunCount and month buckets include every run, even incomplete
+/// ones (missing FinishTime); only the averages exclude null durations. Averages round
+/// to 2dp (away from zero) at rollup time.
 /// </summary>
 public static class MonthlyTimingRollup
 {
@@ -98,6 +100,6 @@ public static class MonthlyTimingRollup
             }
         }
 
-        return count == 0 ? null : Math.Round(sum / count, 2);
+        return count == 0 ? null : Math.Round(sum / count, 2, MidpointRounding.AwayFromZero);
     }
 }

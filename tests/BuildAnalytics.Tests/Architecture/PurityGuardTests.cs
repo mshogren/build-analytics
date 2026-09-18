@@ -1,10 +1,11 @@
 using System.Runtime.CompilerServices;
+using BuildAnalytics.Core.Timing;
 
 namespace BuildAnalytics.Tests.Architecture;
 
 /// <summary>
-/// Enforces the Core charter: the pure project must not reference IO, the network,
-/// an ambient clock, randomness, or process-wide environment state.
+/// Enforces the Core charter. Primary checks are structural (assembly references and the
+/// project file); the lexical scan is a secondary belt-and-braces check.
 /// </summary>
 public sealed class PurityGuardTests
 {
@@ -31,6 +32,30 @@ public sealed class PurityGuardTests
     ];
 
     [Fact]
+    public void Core_assembly_references_no_app_network_or_excel_assemblies()
+    {
+        var referenced = typeof(TimingCalculator).Assembly
+            .GetReferencedAssemblies()
+            .Select(assembly => assembly.Name ?? string.Empty)
+            .ToArray();
+
+        var violations = referenced
+            .Where(IsForbiddenAssembly)
+            .ToArray();
+
+        Assert.Empty(violations);
+    }
+
+    [Fact]
+    public void Core_project_file_declares_no_packages_and_no_project_references()
+    {
+        var csproj = File.ReadAllText(Path.Combine(RepoRoot(), "src", "BuildAnalytics.Core", "BuildAnalytics.Core.csproj"));
+
+        Assert.DoesNotContain("PackageReference", csproj, StringComparison.Ordinal);
+        Assert.DoesNotContain("ProjectReference", csproj, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Core_sources_contain_no_io_network_clock_randomness_or_ambient_environment_usage()
     {
         var coreRoot = Path.Combine(RepoRoot(), "src", "BuildAnalytics.Core");
@@ -55,6 +80,14 @@ public sealed class PurityGuardTests
 
         Assert.Empty(violations);
     }
+
+    private static bool IsForbiddenAssembly(string name)
+        => name.StartsWith("BuildAnalytics.App", StringComparison.Ordinal)
+           || name.StartsWith("System.Net.Http", StringComparison.Ordinal)
+           || name.StartsWith("ClosedXML", StringComparison.Ordinal)
+           || name.StartsWith("DocumentFormat.OpenXml", StringComparison.Ordinal)
+           || name.StartsWith("ExcelNumberFormat", StringComparison.Ordinal)
+           || name.StartsWith("SixLabors", StringComparison.Ordinal);
 
     private static bool IsBuildArtifact(string path)
         => path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) ||
