@@ -493,6 +493,34 @@ truncate.
     typed `Core.Errors.ReportingWriteException` whose message contains only the
     file **name** and the reason — never the absolute destination path. The
     ADR-94 CLI catch remains a second sanitization layer.
+96. **Progress reporting.** `RetrievalPipeline` takes an optional
+    `IRetrievalProgress` (no-op by default) and reports a start line, one line per
+    page, a percentage tick at each 5% boundary, invalid-token restarts, pauses,
+    and completion. The percentage is `(on-disk baseline + handled this pass) /
+    TotalCount`, where `TotalCount` comes from the ADO `count` field (`BuildPage`
+    gains `int? TotalCount`); without a count, page/run lines only. Progress goes
+    to stderr and `--quiet` suppresses it; there are no per-detail lines.
+97. **Incremental refresh is the default.** A `completed` manifest no longer
+    short-circuits. A re-run re-lists from `cursor=null`, skips runs already on
+    disk (ADR-78), writes the new ones, and **stops early once a page adds no new
+    runs** (the list is `queueTimeDescending`, so older pages are already stored).
+    `FailedRunIds` are retried. Status returns to `in_progress` and then
+    `completed`; `CreatedAt` is preserved and `UpdatedAt` refreshed. The
+    fingerprint check (ADR-88/92) still runs first.
+98. **Config file.** Optional JSON at `build-analytics.config.json` (working
+    directory) or `--config <path>`. Precedence: CLI → config → built-in default;
+    there is no environment tier for these values. Keys: `org`, `project`,
+    `outputRoot`, `apiVersion`, `detail`, `maxRuns`, `quiet`, `out`. A `pat` key is
+    a **hard usage error** naming `AZDO_PAT`. A loader performs the IO so
+    `CliParser` stays pure.
+99. **Removed unused surface.** `--from`, `--to`, `--page-size`,
+    `--definition-id`, and `--definition` are gone, as are their config keys; page
+    size is a fixed internal constant (1000). `BuildQuery` drops `MinTime`,
+    `MaxTime`, and the definition fields, so the fingerprint is now
+    `org`/`project`/`detailPolicy`/`apiVersion` and its golden vector is
+    re-pinned. `IDefinitionResolver`, the definitions endpoint call, and
+    `AdoWildcard` are deleted. This supersedes the CLI-surface parts of ADR-79 and
+    ADR-37/41/60.
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
