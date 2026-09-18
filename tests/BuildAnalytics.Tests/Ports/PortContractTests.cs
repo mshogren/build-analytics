@@ -20,6 +20,7 @@ public sealed class PortContractTests
         AssertMethod(typeof(IRunStore), "ListRunIdsAsync", typeof(Task<IReadOnlyList<int>>), typeof(CancellationToken));
         AssertMethod(typeof(ITimingReportWriter), "WriteAsync", typeof(Task), typeof(TimingSummary), typeof(CancellationToken));
         AssertMethod(typeof(IDelayScheduler), "DelayAsync", typeof(Task), typeof(TimeSpan), typeof(CancellationToken));
+        AssertMethod(typeof(IDefinitionResolver), "ResolveAsync", typeof(Task<IReadOnlyList<int>>), typeof(BuildQuery), typeof(CancellationToken));
     }
 
     [Fact]
@@ -53,6 +54,7 @@ public sealed class PortContractTests
         yield return typeof(IRunStore);
         yield return typeof(ITimingReportWriter);
         yield return typeof(IDelayScheduler);
+        yield return typeof(IDefinitionResolver);
     }
 
     private static void AssertMethod(Type type, string name, Type returnType, params Type[] parameterTypes)
