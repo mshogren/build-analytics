@@ -652,5 +652,5 @@ slices verified against the committed SHA. The app is complete: resumable,
 crash-safe, throttle-aware Azure DevOps retrieval with local Excel reporting
 and a clean CLI.
 - **ADR-96..103** (progress %, refresh-by-default with failure retry, config file,
-removed unused surface) verified RESOLVED at `13f5471`; one test-only row for the
-refresh early-stop rule was added after that sign-off.
+removed unused surface) verified RESOLVED at `0258483` (384 tests, 0 warnings,
+clean tree), including the refresh early-stop regression rows.
