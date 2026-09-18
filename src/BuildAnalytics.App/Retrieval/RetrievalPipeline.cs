@@ -33,6 +33,7 @@ public sealed class RetrievalPipeline(
     public async Task<RetrievalResult> RunAsync(BuildQuery query, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
+        cancellationToken.ThrowIfCancellationRequested();
 
         var existing = await manifests.TryReadAsync(cancellationToken).ConfigureAwait(false);
         if (existing is { Status: ManifestStatus.Completed })
@@ -63,6 +64,7 @@ public sealed class RetrievalPipeline(
 
         var createdAt = existing?.CreatedAt ?? clock.GetUtcNow();
         var failedRunIds = new List<int>(existing?.FailedRunIds ?? []);
+        var onDiskRunIds = new HashSet<int>(existingRunIds);
         var cursor = existing?.Cursor;
 
         // ADR-68: a fingerprinted, resumable root exists before the first list call.
@@ -118,6 +120,19 @@ public sealed class RetrievalPipeline(
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
+                    // ADR-7/R11: on a rebuild/replay, never re-fetch detail or overwrite an
+                    // on-disk file the active policy already accepts (that would downgrade a
+                    // detail source back to a thin list row).
+                    if (onDiskRunIds.Contains(listed.Id))
+                    {
+                        var existingRun = await TryReadExistingRunAsync(listed.Id, cancellationToken).ConfigureAwait(false);
+                        if (existingRun is not null
+                            && !DetailPolicyEvaluator.NeedsDetail(existingRun, effective.DetailPolicy))
+                        {
+                            continue;
+                        }
+                    }
+
                     var run = listed;
                     if (DetailPolicyEvaluator.NeedsDetail(run, effective.DetailPolicy))
                     {
@@ -139,6 +154,7 @@ public sealed class RetrievalPipeline(
 
                     await runs.WriteAsync(run, cancellationToken).ConfigureAwait(false);
                     runsWritten++;
+                    onDiskRunIds.Add(run.Id);
                 }
             }
             catch (PipelinePausedException exception)
@@ -219,6 +235,23 @@ public sealed class RetrievalPipeline(
                 query.DefinitionNames);
 
             await manifests.CommitAsync(manifest, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>ADR-7/R11: a corrupt or unreadable existing run is treated as missing and re-fetched.</summary>
+    private async Task<BuildRun?> TryReadExistingRunAsync(int runId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await runs.TryReadAsync(runId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CorruptRunFileException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
         }
     }
 

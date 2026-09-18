@@ -67,16 +67,156 @@ public sealed class RetrievalPipelineTests
     public async Task Replay_after_crash_before_commit_upserts_without_duplicates()
     {
         var (pipeline, source, resolver, runs, manifests, clock, _) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint());
-        runs.Seed(1);
-        source.Page(null, new BuildPage([TestRuns.Create(id: 1, status: "inProgress")], null));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        runs.Put(TestRuns.Create(id: 1, definitionId: null, source: RunSource.List));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
+        source.Detail(1, DetailCompleteRun(1, clock));
 
-        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
 
         Assert.Equal(ManifestStatus.Completed, result.Status);
         Assert.Equal(1, result.RunsWritten);
         Assert.Single(runs.Writes);
         Assert.Equal([1], await runs.ListRunIdsAsync(CancellationToken.None));
+    }
+
+    // ---- rebuild / replay skip (ADR-7/R11) ----
+
+    [Fact]
+    public async Task Rebuild_skips_detail_and_write_for_detail_complete_on_disk_runs()
+    {
+        var (pipeline, source, _, runs, manifests, clock, _) = Create();
+        runs.Put(DetailCompleteRun(1, clock));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.Empty(source.DetailCalls);
+        Assert.Empty(runs.Writes);
+    }
+
+    [Fact]
+    public async Task Rebuild_still_fetches_when_on_disk_file_is_incomplete_under_policy()
+    {
+        var (pipeline, source, _, runs, manifests, clock, _) = Create();
+        runs.Put(TestRuns.Create(id: 1, definitionId: null, source: RunSource.List));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
+        source.Detail(1, DetailCompleteRun(1, clock));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.Equal([1], source.DetailCalls);
+        Assert.Single(runs.Writes);
+    }
+
+    [Fact]
+    public async Task Rebuild_corrupt_on_disk_file_is_treated_as_missing()
+    {
+        var (pipeline, source, _, runs, manifests, clock, _) = Create();
+        runs.Seed(1);
+        runs.Unreadable.Add(1);
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
+        source.Detail(1, DetailCompleteRun(1, clock));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.Equal([1], source.DetailCalls);
+        Assert.Single(runs.Writes);
+    }
+
+    [Fact]
+    public async Task Rebuild_does_not_downgrade_detail_source_to_list()
+    {
+        var (pipeline, source, _, runs, manifests, clock, _) = Create();
+        runs.Put(DetailCompleteRun(1, clock));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+
+        // The list row is contract-complete; without the rebuild skip this would overwrite
+        // the detail-sourced file with a thin list row.
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], null));
+
+        await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Empty(runs.Writes);
+        Assert.Equal(RunSource.Detail, (await runs.TryReadAsync(1, CancellationToken.None))!.Source);
+    }
+
+    // ---- commit failure / sanitization / resolver failure / cancellation ----
+
+    [Fact]
+    public async Task Manifest_commit_failure_propagates()
+    {
+        var (pipeline, source, _, _, manifests, _, _) = Create();
+        manifests.OnCommit = _ => new StorageException("commit failed");
+
+        await Assert.ThrowsAsync<StorageException>(() => pipeline.RunAsync(Query(), CancellationToken.None));
+
+        Assert.Empty(source.ListCalls);
+    }
+
+    [Fact]
+    public async Task LastError_contains_no_pat_and_no_absolute_path()
+    {
+        var (pipeline, source, _, runs, manifests, _, _) = Create();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], null));
+        runs.WriteFailures[1] = new StorageException("failed at /home/node/secret/AZDO_PAT/run.json");
+
+        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Failed, result.Status);
+        Assert.NotNull(manifests.Commits[^1].LastError);
+        Assert.DoesNotContain("/home/node", manifests.Commits[^1].LastError!, StringComparison.Ordinal);
+        Assert.DoesNotContain("AZDO_PAT", manifests.Commits[^1].LastError!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Resolver_failure_propagates_before_any_commit_or_list()
+    {
+        var (pipeline, source, resolver, _, manifests, _, _) = Create();
+        resolver.Failure = new RetryExhaustedException(5, "/project/_apis/build/definitions");
+
+        await Assert.ThrowsAsync<RetryExhaustedException>(
+            () => pipeline.RunAsync(Query(names: ["ci-*"]), CancellationToken.None));
+
+        Assert.Empty(source.ListCalls);
+        Assert.Empty(manifests.Commits);
+    }
+
+    [Theory]
+    [InlineData(ManifestStatus.Paused)]
+    [InlineData(ManifestStatus.Failed)]
+    public async Task Resume_from_paused_or_failed_uses_the_stored_cursor(ManifestStatus status)
+    {
+        var (pipeline, source, resolver, _, manifests, clock, _) = Create();
+        resolver.Ids = [5];
+        manifests.Current = ManifestWith(status, cursor: "t1", clock, fingerprint: Fingerprint(5));
+        source.Page("t1", new BuildPage([], null));
+
+        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.Equal(["t1"], source.ListCalls.Select(call => call.Token));
+    }
+
+    [Fact]
+    public async Task Cancellation_before_the_first_page_makes_no_commit()
+    {
+        var (pipeline, source, resolver, _, manifests, _, _) = Create();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => pipeline.RunAsync(Query(), cts.Token));
+
+        Assert.Empty(manifests.Commits);
+        Assert.Empty(source.ListCalls);
+        Assert.Empty(resolver.Calls);
     }
 
     // ---- short-circuit / compatibility ----
@@ -315,6 +455,14 @@ public sealed class RetrievalPipelineTests
 
     // ---- helpers ----
 
+    private static BuildRun DetailCompleteRun(int id, TimeProvider clock)
+        => TestRuns.Create(
+            id: id,
+            queueTime: clock.GetUtcNow(),
+            startTime: clock.GetUtcNow(),
+            finishTime: clock.GetUtcNow(),
+            source: RunSource.Detail);
+
     private static BuildQuery Query(DetailPolicy policy = DetailPolicy.ListOnly, IReadOnlyList<string>? names = null)
         => new("https://dev.azure.com/org", "project", null, null, [], policy, "7.1")
         {
@@ -322,7 +470,10 @@ public sealed class RetrievalPipelineTests
         };
 
     private static string Fingerprint(params int[] ids)
-        => BuildQueryFingerprint.Compute(Query() with { ResolvedDefinitionIds = ids });
+        => Fingerprint(DetailPolicy.ListOnly, ids);
+
+    private static string Fingerprint(DetailPolicy policy, params int[] ids)
+        => BuildQueryFingerprint.Compute(Query(policy) with { ResolvedDefinitionIds = ids });
 
     private static Manifest ManifestWith(
         ManifestStatus status,

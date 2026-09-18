@@ -94,12 +94,17 @@ internal sealed class FakeDefinitionResolver : IDefinitionResolver
 {
     public IReadOnlyList<int> Ids { get; set; } = [];
 
+    public Exception? Failure { get; set; }
+
     public List<(BuildQuery Query, IReadOnlyList<string> Patterns)> Calls { get; } = [];
 
     public Task<IReadOnlyList<int>> ResolveAsync(BuildQuery query, IReadOnlyList<string> patterns, CancellationToken cancellationToken)
     {
         Calls.Add((query, patterns.ToArray()));
-        return Task.FromResult(Ids);
+
+        return Failure is not null
+            ? Task.FromException<IReadOnlyList<int>>(Failure)
+            : Task.FromResult(Ids);
     }
 }
 
@@ -136,6 +141,10 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
 
     public HashSet<int> FailOnWrite { get; } = [];
 
+    public HashSet<int> Unreadable { get; } = [];
+
+    public Dictionary<int, Exception> WriteFailures { get; } = [];
+
     public void Seed(params int[] runIds)
     {
         foreach (var id in runIds)
@@ -144,8 +153,15 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
         }
     }
 
+    public void Put(BuildRun run) => _runs[run.Id] = run;
+
     public Task WriteAsync(BuildRun run, CancellationToken cancellationToken)
     {
+        if (WriteFailures.TryGetValue(run.Id, out var failure))
+        {
+            throw failure;
+        }
+
         if (FailOnWrite.Contains(run.Id))
         {
             throw new StorageException($"Injected write failure for run {run.Id}.");
@@ -158,7 +174,14 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
     }
 
     public Task<BuildRun?> TryReadAsync(int runId, CancellationToken cancellationToken)
-        => Task.FromResult(_runs.TryGetValue(runId, out var run) ? run : null);
+    {
+        if (Unreadable.Contains(runId))
+        {
+            throw new CorruptRunFileException(runId);
+        }
+
+        return Task.FromResult(_runs.TryGetValue(runId, out var run) ? run : null);
+    }
 
     public Task<IReadOnlyList<int>> ListRunIdsAsync(CancellationToken cancellationToken)
         => Task.FromResult<IReadOnlyList<int>>(_runs.Keys.OrderBy(id => id).ToArray());
