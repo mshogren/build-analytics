@@ -512,7 +512,12 @@ truncate.
 
 Accepted limitations (documented, no action): stale `.tmp` files are ignored by
 `ListRunIdsAsync` and are not garbage-collected at startup; `Manifest` list
-equality is order-sensitive, which is safe while construction stays canonical.
+equality is order-sensitive, which is safe while construction stays canonical;
+when a non-conforming response carries **both** `Retry-After` forms the executor
+takes header order rather than strictly preferring delta-seconds; `FileRunStore.TryReadAsync`
+does not wrap a raw read `IOException` in `StorageException` (upstream layers
+handle it); detail `424` is covered by the generic non-404 abort path with no
+separately named row.
 
 ## Design Review Disposition (F1–F17)
 
@@ -598,3 +603,7 @@ Each slice: failing test → minimal implementation → refactor → full suite 
 - **Slice 1 complete** at `ad6f1dc` on `rewrite/impl`: contracts, ports, pure
 timing, fingerprint, purity guard. 91/91 tests, 0 warnings. Legacy sources
 removed; root is solution + docs + `src/` + `tests/`.
+- **FINAL SIGN-OFF** at `8de40c6`: 381/381 tests, 0 warnings, clean tree; all six
+slices verified against the committed SHA. The app is complete: resumable,
+crash-safe, throttle-aware Azure DevOps retrieval with local Excel reporting
+and a clean CLI.
