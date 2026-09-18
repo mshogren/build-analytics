@@ -558,7 +558,10 @@ when a non-conforming response carries **both** `Retry-After` forms the executor
 takes header order rather than strictly preferring delta-seconds; `FileRunStore.TryReadAsync`
 does not wrap a raw read `IOException` in `StorageException` (upstream layers
 handle it); detail `424` is covered by the generic non-404 abort path with no
-separately named row.
+separately named row; a **resume** starting from a stored cursor with prior
+failures behind it can finish below 100% with no 100% tick, since those ids are
+never re-listed — they stay preserved in `FailedRunIds` and self-heal on the next
+refresh.
 
 ## Design Review Disposition (F1–F17)
 
@@ -648,3 +651,6 @@ removed; root is solution + docs + `src/` + `tests/`.
 slices verified against the committed SHA. The app is complete: resumable,
 crash-safe, throttle-aware Azure DevOps retrieval with local Excel reporting
 and a clean CLI.
+- **ADR-96..103** (progress %, refresh-by-default with failure retry, config file,
+removed unused surface) verified RESOLVED at `13f5471`; one test-only row for the
+refresh early-stop rule was added after that sign-off.
