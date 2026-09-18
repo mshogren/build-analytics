@@ -1,4 +1,5 @@
 using BuildAnalytics.App.Storage;
+using BuildAnalytics.Core.Errors;
 
 namespace BuildAnalytics.Tests.Storage;
 
@@ -124,5 +125,68 @@ public sealed class FileRunStoreTests
         {
             Assert.Empty(Directory.GetFiles(runDirectory));
         }
+    }
+
+    [Fact]
+    public async Task TryRead_corrupt_run_file_throws_CorruptRunFileException()
+    {
+        using var root = new TempOutputRoot();
+        var runDirectory = Path.Combine(root.Path, "runs", "5");
+        Directory.CreateDirectory(runDirectory);
+        await File.WriteAllTextAsync(Path.Combine(runDirectory, "run.json"), "{ not json", CancellationToken.None);
+
+        var store = new FileRunStore(root.Path, new PhysicalFileOperations());
+
+        await Assert.ThrowsAsync<CorruptRunFileException>(() => store.TryReadAsync(5, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task TryRead_schema_mismatch_throws_UnsupportedSchemaVersionException()
+    {
+        using var root = new TempOutputRoot();
+        var runDirectory = Path.Combine(root.Path, "runs", "5");
+        Directory.CreateDirectory(runDirectory);
+        await File.WriteAllTextAsync(
+            Path.Combine(runDirectory, "run.json"),
+            "{\"schemaVersion\":99,\"source\":\"list\",\"fetchedAt\":\"2024-01-01T00:00:00+00:00\",\"id\":5}",
+            CancellationToken.None);
+
+        var store = new FileRunStore(root.Path, new PhysicalFileOperations());
+        var exception = await Assert.ThrowsAsync<UnsupportedSchemaVersionException>(() => store.TryReadAsync(5, CancellationToken.None));
+
+        Assert.Equal(BuildAnalytics.Core.Models.BuildRun.CurrentSchemaVersion, exception.Expected);
+        Assert.Equal(99, exception.Actual);
+    }
+
+    [Fact]
+    public async Task Concurrent_reader_never_sees_a_partial_run_file()
+    {
+        using var root = new TempOutputRoot();
+        var entered = new ManualResetEventSlim(false);
+        var release = new ManualResetEventSlim(false);
+        var writing = new RecordingFileOperations(
+            new PhysicalFileOperations(),
+            beforeDelegate: (operation, _) =>
+            {
+                if (operation == FileOperation.Rename)
+                {
+                    entered.Set();
+                    release.Wait();
+                }
+            });
+
+        var writer = new FileRunStore(root.Path, writing);
+        var reader = new FileRunStore(root.Path, new PhysicalFileOperations());
+        var run = TestRuns.Create(id: 4);
+
+        var writeTask = Task.Run(() => writer.WriteAsync(run, CancellationToken.None));
+        entered.Wait();
+
+        Assert.Null(await reader.TryReadAsync(4, CancellationToken.None));
+
+        release.Set();
+        await writeTask;
+
+        Assert.Equal(run, await reader.TryReadAsync(4, CancellationToken.None));
     }
 }

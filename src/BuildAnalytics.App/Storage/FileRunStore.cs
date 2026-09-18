@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
+using BuildAnalytics.Core;
+using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Ports;
 
@@ -11,8 +13,6 @@ namespace BuildAnalytics.App.Storage;
 /// </summary>
 public sealed class FileRunStore : IRunStore
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
     private readonly string _runsRoot;
     private readonly AtomicFileWriter _writer;
 
@@ -28,7 +28,7 @@ public sealed class FileRunStore : IRunStore
     {
         ArgumentNullException.ThrowIfNull(run);
 
-        var content = JsonSerializer.SerializeToUtf8Bytes(run, JsonOptions);
+        var content = JsonSerializer.SerializeToUtf8Bytes(run, BuildAnalyticsJson.Options);
         return _writer.WriteAsync(RunPath(run.Id), content, cancellationToken);
     }
 
@@ -41,7 +41,32 @@ public sealed class FileRunStore : IRunStore
         }
 
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
-        return JsonSerializer.Deserialize<BuildRun>(bytes, JsonOptions);
+
+        try
+        {
+            using var document = JsonDocument.Parse(bytes);
+            var root = document.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("schemaVersion", out var schemaVersionElement) ||
+                schemaVersionElement.ValueKind != JsonValueKind.Number ||
+                !schemaVersionElement.TryGetInt32(out var schemaVersion))
+            {
+                throw new CorruptRunFileException(runId);
+            }
+
+            if (schemaVersion != BuildRun.CurrentSchemaVersion)
+            {
+                throw new UnsupportedSchemaVersionException(BuildRun.CurrentSchemaVersion, schemaVersion);
+            }
+
+            return root.Deserialize<BuildRun>(BuildAnalyticsJson.Options)
+                ?? throw new CorruptRunFileException(runId);
+        }
+        catch (JsonException exception)
+        {
+            throw new CorruptRunFileException(runId, exception);
+        }
     }
 
     public Task<IReadOnlyList<int>> ListRunIdsAsync(CancellationToken cancellationToken)

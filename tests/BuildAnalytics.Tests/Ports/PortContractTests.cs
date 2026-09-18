@@ -46,36 +46,6 @@ public sealed class PortContractTests
         }
     }
 
-    [Fact]
-    public void IDelayScheduler_DelayAsync_Shape()
-    {
-        AssertMethod(typeof(IDelayScheduler), "DelayAsync", typeof(Task), typeof(TimeSpan), typeof(CancellationToken));
-    }
-
-    [Fact]
-    public void Calculate_DoesNotConsultClock()
-    {
-        var run = new BuildRun(
-            BuildRun.CurrentSchemaVersion,
-            RunSource.List,
-            DateTimeOffset.UnixEpoch,
-            Id: 1,
-            DefinitionId: 1,
-            DefinitionName: "ci",
-            BuildNumber: "1",
-            QueueTime: DateTimeOffset.UnixEpoch,
-            StartTime: DateTimeOffset.UnixEpoch.AddSeconds(5),
-            FinishTime: DateTimeOffset.UnixEpoch.AddSeconds(25),
-            Status: "completed",
-            Result: "succeeded",
-            Reason: "manual",
-            PoolId: 1,
-            PoolName: "pool",
-            SourceBranch: "main");
-
-        Assert.Equal(TimingCalculator.Calculate(run), TimingCalculator.Calculate(run));
-    }
-
     private static IEnumerable<Type> PortTypes()
     {
         yield return typeof(IBuildSource);

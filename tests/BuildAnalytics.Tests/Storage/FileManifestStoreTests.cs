@@ -1,4 +1,5 @@
 using BuildAnalytics.App.Storage;
+using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
 
 namespace BuildAnalytics.Tests.Storage;
@@ -96,7 +97,7 @@ public sealed class FileManifestStoreTests
 
         using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
 
-        var exception = await Assert.ThrowsAsync<SchemaVersionMismatchException>(
+        var exception = await Assert.ThrowsAsync<UnsupportedSchemaVersionException>(
             () => store.TryReadAsync(CancellationToken.None));
 
         Assert.Equal(Manifest.CurrentSchemaVersion, exception.Expected);
@@ -114,7 +115,7 @@ public sealed class FileManifestStoreTests
 
         using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
 
-        await Assert.ThrowsAsync<SchemaVersionMismatchException>(() => store.TryReadAsync(CancellationToken.None));
+        await Assert.ThrowsAsync<UnsupportedSchemaVersionException>(() => store.TryReadAsync(CancellationToken.None));
         Assert.True(File.Exists(manifestPath));
         Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
     }
@@ -140,7 +141,7 @@ public sealed class FileManifestStoreTests
         await File.WriteAllTextAsync(manifestPath, "{\"schemaVersion\":99}", CancellationToken.None);
 
         using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
-        var exception = await Assert.ThrowsAsync<SchemaVersionMismatchException>(
+        var exception = await Assert.ThrowsAsync<UnsupportedSchemaVersionException>(
             () => store.TryReadAsync(CancellationToken.None));
 
         Assert.DoesNotContain(root.Path, exception.Message, StringComparison.Ordinal);
@@ -178,7 +179,7 @@ public sealed class FileManifestStoreTests
         {
           "schemaVersion": {{schemaVersion}},
           "fingerprint": "fp",
-          "status": 1,
+          "status": "in_progress",
           "cursor": null,
           "createdAt": "2024-01-01T00:00:00+00:00",
           "updatedAt": "2024-01-01T00:00:00+00:00",

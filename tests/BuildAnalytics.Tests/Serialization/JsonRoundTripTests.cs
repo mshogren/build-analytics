@@ -1,12 +1,11 @@
 using System.Text.Json;
+using BuildAnalytics.Core;
 using BuildAnalytics.Core.Models;
 
 namespace BuildAnalytics.Tests.Serialization;
 
 public sealed class JsonRoundTripTests
 {
-    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
-
     [Fact]
     public void BuildRun_JsonRoundTrip_AllFieldsSet()
     {
@@ -26,7 +25,7 @@ public sealed class JsonRoundTripTests
             sourceBranch: "refs/heads/main",
             source: RunSource.Detail);
 
-        var back = JsonSerializer.Deserialize<BuildRun>(JsonSerializer.Serialize(run, Options), Options);
+        var back = JsonSerializer.Deserialize<BuildRun>(JsonSerializer.Serialize(run, BuildAnalyticsJson.Options), BuildAnalyticsJson.Options);
 
         Assert.Equal(run, back);
     }
@@ -48,7 +47,7 @@ public sealed class JsonRoundTripTests
             poolName: null,
             sourceBranch: null);
 
-        var back = JsonSerializer.Deserialize<BuildRun>(JsonSerializer.Serialize(run, Options), Options);
+        var back = JsonSerializer.Deserialize<BuildRun>(JsonSerializer.Serialize(run, BuildAnalyticsJson.Options), BuildAnalyticsJson.Options);
 
         Assert.Equal(run, back);
     }
@@ -63,7 +62,7 @@ public sealed class JsonRoundTripTests
     public void BuildRun_SerializesFlatDefinitionAndPoolFields()
     {
         var run = TestRuns.Create(definitionId: 7, definitionName: "ci", poolId: 3, poolName: "pool");
-        var json = JsonSerializer.Serialize(run, Options);
+        var json = JsonSerializer.Serialize(run, BuildAnalyticsJson.Options);
 
         Assert.Contains("\"definitionId\":7", json, StringComparison.Ordinal);
         Assert.Contains("\"definitionName\":\"ci\"", json, StringComparison.Ordinal);
@@ -74,12 +73,45 @@ public sealed class JsonRoundTripTests
     [Fact]
     public void BuildRun_DroppedFields_NeverEmitted()
     {
-        var json = JsonSerializer.Serialize(TestRuns.Create(), Options);
+        var json = JsonSerializer.Serialize(TestRuns.Create(), BuildAnalyticsJson.Options);
 
         foreach (var dropped in new[] { "\"definition\":", "\"queue\":", "requestedFor", "requestedBy", "sourceVersion", "tags", "uri", "webUrl", "keepForever" })
         {
             Assert.DoesNotContain(dropped, json, StringComparison.Ordinal);
         }
+    }
+
+    [Theory]
+    [InlineData(RunSource.List, "list")]
+    [InlineData(RunSource.Detail, "detail")]
+    public void BuildRun_SerializesSource_AsSnakeCaseString(RunSource source, string expected)
+    {
+        var json = JsonSerializer.Serialize(TestRuns.Create(source: source), BuildAnalyticsJson.Options);
+
+        Assert.Contains($"\"source\":\"{expected}\"", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildRun_DeserializesSource_FromString()
+    {
+        var json = JsonSerializer.Serialize(TestRuns.Create(source: RunSource.Detail), BuildAnalyticsJson.Options);
+
+        var back = JsonSerializer.Deserialize<BuildRun>(json, BuildAnalyticsJson.Options);
+
+        Assert.Equal(RunSource.Detail, back!.Source);
+    }
+
+    [Fact]
+    public void BuildRun_GoldenShape_PropertyNames()
+    {
+        var expected = new[]
+        {
+            "buildNumber", "definitionId", "definitionName", "fetchedAt", "finishTime", "id",
+            "poolId", "poolName", "queueTime", "reason", "result", "schemaVersion", "source",
+            "sourceBranch", "startTime", "status"
+        };
+
+        Assert.Equal(expected, PropertyNames(TestRuns.Create()));
     }
 
     [Fact]
@@ -88,7 +120,7 @@ public sealed class JsonRoundTripTests
         var json = """
         {
           "schemaVersion": 1,
-          "source": 0,
+          "source": "list",
           "fetchedAt": "2024-01-01T00:00:00+00:00",
           "id": 5,
           "definitionId": 2,
@@ -115,7 +147,7 @@ public sealed class JsonRoundTripTests
         }
         """;
 
-        var run = JsonSerializer.Deserialize<BuildRun>(json, Options);
+        var run = JsonSerializer.Deserialize<BuildRun>(json, BuildAnalyticsJson.Options);
 
         Assert.NotNull(run);
         Assert.Equal(5, run!.Id);
@@ -129,21 +161,11 @@ public sealed class JsonRoundTripTests
     {
         var run = TestRuns.Create(queueTime: null, startTime: null, finishTime: null);
 
-        var back = JsonSerializer.Deserialize<BuildRun>(JsonSerializer.Serialize(run, Options), Options);
+        var back = JsonSerializer.Deserialize<BuildRun>(JsonSerializer.Serialize(run, BuildAnalyticsJson.Options), BuildAnalyticsJson.Options);
 
         Assert.Null(back!.QueueTime);
         Assert.Null(back.StartTime);
         Assert.Null(back.FinishTime);
-    }
-
-    [Fact]
-    public void BuildRun_Source_RunSourceRoundTrip()
-    {
-        var run = TestRuns.Create(source: RunSource.Detail);
-
-        var back = JsonSerializer.Deserialize<BuildRun>(JsonSerializer.Serialize(run, Options), Options);
-
-        Assert.Equal(RunSource.Detail, back!.Source);
     }
 
     [Fact]
@@ -152,7 +174,7 @@ public sealed class JsonRoundTripTests
         var fetchedAt = new DateTimeOffset(2024, 6, 1, 12, 30, 15, TimeSpan.Zero);
         var run = TestRuns.Create() with { FetchedAt = fetchedAt };
 
-        var back = JsonSerializer.Deserialize<BuildRun>(JsonSerializer.Serialize(run, Options), Options);
+        var back = JsonSerializer.Deserialize<BuildRun>(JsonSerializer.Serialize(run, BuildAnalyticsJson.Options), BuildAnalyticsJson.Options);
 
         Assert.Equal(fetchedAt, back!.FetchedAt);
     }
@@ -162,7 +184,7 @@ public sealed class JsonRoundTripTests
     {
         var page = new BuildPage([TestRuns.Create(id: 1), TestRuns.Create(id: 2)], "token-1");
 
-        var back = JsonSerializer.Deserialize<BuildPage>(JsonSerializer.Serialize(page, Options), Options);
+        var back = JsonSerializer.Deserialize<BuildPage>(JsonSerializer.Serialize(page, BuildAnalyticsJson.Options), BuildAnalyticsJson.Options);
 
         Assert.NotNull(back);
         Assert.Equal(2, back!.Runs.Count);
@@ -175,7 +197,7 @@ public sealed class JsonRoundTripTests
     {
         var page = new BuildPage([], null);
 
-        var back = JsonSerializer.Deserialize<BuildPage>(JsonSerializer.Serialize(page, Options), Options);
+        var back = JsonSerializer.Deserialize<BuildPage>(JsonSerializer.Serialize(page, BuildAnalyticsJson.Options), BuildAnalyticsJson.Options);
 
         Assert.Empty(back!.Runs);
         Assert.Null(back.ContinuationToken);
@@ -196,7 +218,7 @@ public sealed class JsonRoundTripTests
             [7, 8],
             ["ci", "release"]);
 
-        var back = JsonSerializer.Deserialize<Manifest>(JsonSerializer.Serialize(manifest, Options), Options);
+        var back = JsonSerializer.Deserialize<Manifest>(JsonSerializer.Serialize(manifest, BuildAnalyticsJson.Options), BuildAnalyticsJson.Options);
 
         Assert.NotNull(back);
         Assert.Equal(manifest.SchemaVersion, back!.SchemaVersion);
@@ -212,6 +234,19 @@ public sealed class JsonRoundTripTests
     }
 
     [Theory]
+    [InlineData(ManifestStatus.Pending, "pending")]
+    [InlineData(ManifestStatus.InProgress, "in_progress")]
+    [InlineData(ManifestStatus.Completed, "completed")]
+    [InlineData(ManifestStatus.Paused, "paused")]
+    [InlineData(ManifestStatus.Failed, "failed")]
+    public void Manifest_SerializesStatus_AsSnakeCaseString(ManifestStatus status, string expected)
+    {
+        var json = JsonSerializer.Serialize(SampleManifest(status), BuildAnalyticsJson.Options);
+
+        Assert.Contains($"\"status\":\"{expected}\"", json, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData(ManifestStatus.Pending)]
     [InlineData(ManifestStatus.InProgress)]
     [InlineData(ManifestStatus.Completed)]
@@ -219,7 +254,27 @@ public sealed class JsonRoundTripTests
     [InlineData(ManifestStatus.Failed)]
     public void ManifestStatus_RoundTrips_AllValues(ManifestStatus status)
     {
-        var manifest = new Manifest(
+        var back = JsonSerializer.Deserialize<Manifest>(
+            JsonSerializer.Serialize(SampleManifest(status), BuildAnalyticsJson.Options),
+            BuildAnalyticsJson.Options);
+
+        Assert.Equal(status, back!.Status);
+    }
+
+    [Fact]
+    public void Manifest_GoldenShape_PropertyNames()
+    {
+        var expected = new[]
+        {
+            "createdAt", "cursor", "definitionIds", "definitionNames", "failedRunIds",
+            "fingerprint", "lastError", "schemaVersion", "status", "updatedAt"
+        };
+
+        Assert.Equal(expected, PropertyNames(SampleManifest(ManifestStatus.InProgress)));
+    }
+
+    private static Manifest SampleManifest(ManifestStatus status)
+        => new(
             Manifest.CurrentSchemaVersion,
             "f",
             status,
@@ -231,8 +286,15 @@ public sealed class JsonRoundTripTests
             [],
             []);
 
-        var back = JsonSerializer.Deserialize<Manifest>(JsonSerializer.Serialize(manifest, Options), Options);
+    private static string[] PropertyNames<T>(T value)
+    {
+        var json = JsonSerializer.SerializeToUtf8Bytes(value, BuildAnalyticsJson.Options);
+        using var document = JsonDocument.Parse(json);
 
-        Assert.Equal(status, back!.Status);
+        return document.RootElement
+            .EnumerateObject()
+            .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
     }
 }

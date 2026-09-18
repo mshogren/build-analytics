@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using BuildAnalytics.Core;
+using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Ports;
 
@@ -12,8 +14,6 @@ namespace BuildAnalytics.App.Storage;
 /// </summary>
 public sealed class FileManifestStore : IManifestStore, IDisposable
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
     private readonly string _outputRoot;
     private readonly string _manifestPath;
     private readonly string _lockPath;
@@ -60,10 +60,10 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
 
             if (schemaVersion != Manifest.CurrentSchemaVersion)
             {
-                throw new SchemaVersionMismatchException(Manifest.CurrentSchemaVersion, schemaVersion);
+                throw new UnsupportedSchemaVersionException(Manifest.CurrentSchemaVersion, schemaVersion);
             }
 
-            var manifest = root.Deserialize<Manifest>(JsonOptions);
+            var manifest = root.Deserialize<Manifest>(BuildAnalyticsJson.Options);
             if (manifest is null)
             {
                 Quarantine();
@@ -83,7 +83,7 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
     {
         ArgumentNullException.ThrowIfNull(manifest);
 
-        var content = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
+        var content = JsonSerializer.SerializeToUtf8Bytes(manifest, BuildAnalyticsJson.Options);
         return _writer.WriteAsync(_manifestPath, content, cancellationToken);
     }
 

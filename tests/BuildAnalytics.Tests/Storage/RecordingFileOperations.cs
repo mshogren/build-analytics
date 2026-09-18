@@ -10,18 +10,24 @@ internal enum FileOperation
 }
 
 /// <summary>
-/// Wraps a real <see cref="IFileOperations"/> and records calls; an optional failure
-/// factory throws deterministically between the atomic-write stages (F10 seam).
+/// Wraps a real <see cref="IFileOperations"/> and records calls. An optional failure
+/// factory throws deterministically between the atomic-write stages; an optional
+/// delegate can block (F10 seam).
 /// </summary>
 internal sealed class RecordingFileOperations : IFileOperations
 {
     private readonly IFileOperations _inner;
     private readonly Func<FileOperation, string, Exception?>? _failure;
+    private readonly Action<FileOperation, string>? _beforeDelegate;
 
-    public RecordingFileOperations(IFileOperations inner, Func<FileOperation, string, Exception?>? failure = null)
+    public RecordingFileOperations(
+        IFileOperations inner,
+        Func<FileOperation, string, Exception?>? failure = null,
+        Action<FileOperation, string>? beforeDelegate = null)
     {
         _inner = inner;
         _failure = failure;
+        _beforeDelegate = beforeDelegate;
     }
 
     public List<(FileOperation Operation, string Path)> Calls { get; } = [];
@@ -47,6 +53,8 @@ internal sealed class RecordingFileOperations : IFileOperations
     private void Record(FileOperation operation, string path)
     {
         Calls.Add((operation, path));
+
+        _beforeDelegate?.Invoke(operation, path);
 
         var failure = _failure?.Invoke(operation, path);
         if (failure is not null)

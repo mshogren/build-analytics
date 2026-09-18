@@ -1,5 +1,9 @@
 # Build Analytics — Rewrite Plan
 
+> **Canonical copy.** This file at `/workspace/build-analytics-plan/PLAN.md` is the
+> single source of truth for all agents. Any `PLAN.md` inside the implementation
+> repo is generated from it.
+
 Clean-slate .NET rewrite. Existing repo is reference-only; it is not modified.
 
 ## Goal
@@ -32,19 +36,52 @@ BuildAnalytics.Tests  # xUnit
 
 Core references no IO: no `File`/`Directory`, no `HttpClient`, no `ClosedXML`,
 no `DateTime.Now`/`UtcNow`, no `Random`/`Guid`/`Environment`. Enforced by an
-architecture test scoped to the pure timing types (`TimingCalculator`,
-`MonthlyTimingRollup`) — Core may host the `TimeProvider`/delay seam.
+architecture test scoped to **all** of Core — enforced by an assembly-reference
+check plus a `.csproj` scan, with the lexical scan secondary.
 
-Ports defined in Core:
+Ports defined in Core (all async, all take `CancellationToken`):
 
 ```csharp
-IBuildSource         // paged list retrieval (+ optional detail)
-IManifestStore       // read/commit retrieval progress
-IRunStore            // write/read raw run files
-ITimingReportWriter  // emit a summary (Excel is the v1 adapter; in-memory test adapter)
+public sealed record BuildPage(IReadOnlyList<BuildRun> Runs, string? ContinuationToken);
+
+public interface IBuildSource {
+    Task<BuildPage> ListAsync(BuildQuery query, string? continuationToken, CancellationToken ct);
+    Task<BuildRun> GetDetailAsync(BuildQuery query, int runId, CancellationToken ct); // opt-in
+}
+public interface IManifestStore {
+    Task<Manifest?> TryReadAsync(CancellationToken ct);
+    Task CommitAsync(Manifest manifest, CancellationToken ct);
+}
+public interface IRunStore {
+    Task WriteAsync(BuildRun run, CancellationToken ct);
+    Task<BuildRun?> TryReadAsync(int runId, CancellationToken ct);
+    Task<IReadOnlyList<int>> ListRunIdsAsync(CancellationToken ct);
+}
+public interface ITimingReportWriter {
+    Task WriteAsync(TimingSummary summary, CancellationToken ct); // adapter owns its destination
+}
+public interface IDelayScheduler {
+    Task DelayAsync(TimeSpan delay, CancellationToken ct);
+}
 ```
 
-A `TimeProvider`/delay seam is injected for deterministic backoff and timestamps.
+`IBuildSource` is **page-oriented**, not `IAsyncEnumerable`: the manifest
+checkpoint is a per-page cursor, so page boundaries must stay visible.
+`IRunStore.ListRunIdsAsync` supports the corrupt-manifest rebuild (Q7).
+
+Canonical types (ratified after the implementer's design landed):
+
+- `Models.BuildRun` — flat persistence DTO, carries `FetchedAt`
+- `Timing.TimingCalculator.Calculate(BuildRun) -> RunTiming` — durations
+- `Timing.MonthlyTimingRollup.Summarize(IEnumerable<BuildRun>) -> TimingSummary`
+- `Timing.TimingSummary(Overall, Months)`, `TimingTotals`, `MonthlyTimingSummary`
+- `Query.BuildQuery` + `Query.BuildQueryFingerprint.Compute`
+- `Query.DetailPolicy { ListOnly, FillMissing }`
+
+`IDelayScheduler` is Core's only timing seam (shape-only until the retry slice),
+so waits are deterministic in tests. Core has **no** `System.TimeProvider`
+dependency: adapters own the clock and stamp `FetchedAt`/`CreatedAt`/`UpdatedAt`.
+Resolving an HTTP-date `Retry-After` happens in the App HTTP adapter.
 
 ## Domain Model (raw-files-primary)
 
@@ -62,14 +99,14 @@ broke upsert.
 `run.json` field contract:
 
 ```
-schemaVersion, source(list|detail), fetchedWith,
+schemaVersion, source(list|detail), fetchedAt,
 id, definitionId, definitionName, buildNumber,
 queueTime, startTime, finishTime,
 status, result, reason, poolId, poolName, sourceBranch
 ```
 
 All of these are present in the build-list response, so the detail endpoint is a
-fallback. `source` + `fetchedWith` make an incomplete file detectable on resume.
+fallback. `source` (`list`|`detail`) makes an incomplete file detectable on resume.
 
 The schema is **flat**. ADO fields outside this contract (nested `definition`/
 `queue`, `requestedFor`, `requestedBy`, `sourceVersion`, `tags`, `uri`,
@@ -92,6 +129,11 @@ same id set describe the same data and should resume each other.
 
 Excluded from identity: `outputRoot` (a location), `maxRuns` (a runtime budget),
 input ordering, and null-vs-empty collections (canonicalized to empty).
+
+Canonical form: `key=value` lines joined by `\n` (`org=`, `project=`, `minTime=`,
+`maxTime=`, `resolvedDefinitionIds=`, `detailPolicy=`, `apiVersion=`); a null
+timestamp renders as `-`. The hash is SHA-256 lowercase hex. A golden-vector test
+pins this exact format, so accidental canonicalization drift fails loudly.
 
 A mismatch against a non-empty `runs/` is a typed error telling the operator to
 use a new output root.
@@ -179,7 +221,8 @@ truncate.
    typed error directing the operator to a new output root. No migration code,
    and a newer-but-valid manifest is never quarantined as "corrupt".
 9. **Rounding.** Domain stores raw seconds. Rounding to 2dp happens only in
-   aggregate/report output. The `>300s` wait threshold compares raw seconds.
+   aggregate/report output, using `MidpointRounding.AwayFromZero` (0.125 → 0.13).
+   The `>300s` wait threshold compares raw seconds.
 10. **Month ordering.** Real UTC months ascending; `(unknown)` sorts last.
 11. **Month anchor.** Grouping anchor is `QueueTime` only; no `StartTime`
     fallback. Absent `QueueTime` goes to `(unknown)`.
@@ -189,6 +232,47 @@ truncate.
     resolved definition ids, detail policy, api version). Raw ids/names are
     informational. Null and empty collections are the same identity.
 14. **Run schema is flat.** Fields outside the contract are dropped entirely.
+15. **Port shape.** Async, `CancellationToken`-aware, page-oriented `IBuildSource`.
+16. **Fingerprint hash.** SHA-256, lowercase hex; a golden-vector test pins it.
+17. **Canonical API names.** As recorded in Target Layout, ratified after the
+    implementer's design landed. Alternate timing type names are not used.
+18. **JSON tolerance.** Unknown fields are ignored on read and never emitted.
+19. **Case sensitivity.** `org` and `project` are case-sensitive, preserved as given.
+20. **No clock in Core.** `IDelayScheduler` only; adapters own `TimeProvider`.
+21. **Incomplete runs count.** `RunCount` and monthly buckets include runs with
+    missing timestamps; only averages skip nulls.
+22. **Value objects copy inputs.** `TimingSummary.Months` is defensively copied so
+    caller mutation cannot change equality or hashing.
+23. **JSON settings.** Core exports one canonical `JsonSerializerOptions`:
+    `JsonSerializerDefaults.Web` (camelCase, case-insensitive reads) plus
+    `JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower)`. App adapters and
+    tests consume that same instance — no ad-hoc options. Enums serialize as
+    strings: `"source":"list"|"detail"`, `"status":"in_progress"`. Literal-JSON
+    tests pin this, and a golden exact-shape assertion guards field drift.
+24. **Typed storage errors live in Core** (`BuildAnalytics.Core.Errors`):
+    `OutputRootInUseException`, `UnsupportedSchemaVersionException`,
+    `FingerprintMismatchException`, `CorruptRunFileException`. A valid artifact with
+    an unexpected `schemaVersion` (older or newer) throws
+    `UnsupportedSchemaVersionException` — not corruption, never quarantined.
+25. **Corrupt run files throw.** `IRunStore.TryReadAsync` returns null only when
+    the file is absent; an unparseable run file throws `CorruptRunFileException`.
+    Only the manifest is quarantined.
+26. **Fault seam.** The file adapters depend on `IFileOperations`
+    (`WriteTempAsync` / `FlushToDiskAsync` / `RenameAsync`); tests inject a
+    decorator that throws or blocks at a chosen stage. Supersedes the proposed
+    `IStorageFaults` checkpoint interface — equivalent and cleaner.
+27. **`lastError` sanitization** is owned by the error-capture layer (HTTP
+    adapter / pipeline), not the store. The store persists what it is given and
+    injects no PAT or absolute path.
+28. **Fingerprint compatibility** is a pure helper,
+    `ManifestCompatibility.EnsureCompatible(manifest, expectedFingerprint, existingRunIds)`,
+    called by the pipeline. It throws `FingerprintMismatchException` only when
+    `runs/` is non-empty and fingerprints differ. The frozen `IManifestStore` has
+    no fingerprint parameter.
+
+Open (not yet decided): `Manifest`'s `IReadOnlyList` fields still use reference
+equality inside record `Equals`. Apply the same defensive-copy pattern if value
+semantics are needed; no ruling yet.
 
 ## Design Review Disposition (F1–F17)
 
@@ -243,8 +327,9 @@ pure logic; each test gets its own output root.
 ## TDD Slices
 
 1. **Contracts + pure timing.** All ports, `BuildQuery` + fingerprint, models,
-   `TimeProvider`/delay seam, `TimingCalculator`, `MonthlyTimingRollup`.
-   No adapters. (Revised per F6/F11.)
+   `IDelayScheduler` seam, and the canonical types (`Models.BuildRun`,
+   `TimingCalculator`, `RunTiming`, `MonthlyTimingRollup`, `TimingTotals`,
+   `TimingSummary`, `MonthlyTimingSummary`). No adapters. (F6/F11; ratified ADR-17.)
 2. **Manifest + run store adapters.** Atomicity, lock, restart, idempotent
    upsert, crash-before-commit fault injection.
 3. **ADO source adapter.** Paging, continuation forwarding, retry, no overfetch.
@@ -267,3 +352,9 @@ Each slice: failing test → minimal implementation → refactor → full suite 
 - .NET SDK 10.0.401 installed.
 - Baseline verified: `dotnet test build-analytics.slnx` → 15/15 pass on `da40a14`.
 - Existing code builds with 3 nullable warnings; reference-only.
+
+## Progress
+
+- **Slice 1 complete** at `ad6f1dc` on `rewrite/impl`: contracts, ports, pure
+timing, fingerprint, purity guard. 91/91 tests, 0 warnings. Legacy sources
+removed; root is solution + docs + `src/` + `tests/`.

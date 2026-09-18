@@ -1,3 +1,4 @@
+using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
 
 namespace BuildAnalytics.App.Storage;
