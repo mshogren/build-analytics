@@ -548,17 +548,17 @@ truncate.
     adds only runs not already on disk (ADR-78/97), so a build stored while still
     running keeps its stored values. Chosen deliberately for cost; revisit with an
     explicit "refresh stored runs" mode if that matters.
-107. **The workbook is filter-aware where it is cheap to be.** `Runs` becomes an
-    Excel Table; `Overview` is written as `SUBTOTAL(101–111)` formulas over that
-    table (plus hidden 1/0 helper columns for the status counts), so filtering the
-    raw sheet updates it. `Monthly` stays **static** with a note that it always
-    covers the full run set. **No `Pivot` sheet is shipped:** ClosedXML writes the
-    pivot-cache parts at the package root instead of `/xl/` (non-conformant, and
-    likely to trigger Excel's repair prompt) and emits a pivot with no
-    `<rowItems>`/`<colItems>`; instead the Runs table lets a user insert a native
-    PivotTable in one step. `COUNTIFS`/`SUMIFS` are deliberately not used — they
-    ignore autofilter. The workbook is set to full-calculate on load, and tests
-    assert the formula/table structure and the hidden helpers rather than computed
+107. **The workbook is filter-aware.** `Runs` is an Excel Table; `Overview` uses
+    `SUBTOTAL(103|109|101)` and `Monthly` uses `SUMIFS`/`AVERAGEIFS` carrying an
+    explicit `RunsTable[Visible] = 1` criterion, where the hidden `Visible` helper
+    is `=SUBTOTAL(103,$A<row>)` per row. Both summary sheets therefore follow a
+    filter on the raw sheet; an aggregation without the Visible criterion would
+    silently ignore it. **No `Pivot` sheet is shipped:** ClosedXML writes the
+    pivot-cache parts at the package root instead of `/xl/` and emits a pivot with
+    no `<rowItems>`/`<colItems>`, which cannot be verified here and would likely
+    trigger Excel's repair prompt; the Runs table still allows a native PivotTable
+    to be inserted. The workbook is set to full-calculate on load, and tests
+    assert the formula/table structure and hidden helpers rather than computed
     values (Excel computes those on open).
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
