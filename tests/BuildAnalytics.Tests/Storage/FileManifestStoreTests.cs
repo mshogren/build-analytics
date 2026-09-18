@@ -348,6 +348,125 @@ public sealed class FileManifestStoreTests
         Assert.DoesNotContain("\"pat\"", text, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(FileOperation.WriteTemp)]
+    [InlineData(FileOperation.FlushToDisk)]
+    public async Task Overwrite_fault_leaves_prior_manifest_intact_and_no_temp_file(FileOperation failAt)
+    {
+        using var root = new TempOutputRoot();
+
+        using (var initial = new FileManifestStore(root.Path, new PhysicalFileOperations()))
+        {
+            await initial.CommitAsync(SampleManifest(cursor: "a"), CancellationToken.None);
+        }
+
+        var failing = new RecordingFileOperations(
+            new PhysicalFileOperations(),
+            (operation, path) => operation == failAt && path.Contains("manifest.json", StringComparison.Ordinal)
+                ? new IOException("injected")
+                : null);
+
+        using (var store = new FileManifestStore(root.Path, failing))
+        {
+            await Assert.ThrowsAsync<IOException>(() => store.CommitAsync(SampleManifest(cursor: "b"), CancellationToken.None));
+        }
+
+        using var reader = FileManifestStore.OpenReadOnly(root.Path);
+        Assert.Equal("a", (await reader.TryReadAsync(CancellationToken.None))!.Cursor);
+        Assert.DoesNotContain(Directory.GetFiles(root.Path), file => file.EndsWith(".tmp", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("{\"schemaVersion\":1,\"status\":\"in_progress\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}")]
+    [InlineData("{\"schemaVersion\":1,\"fingerprint\":\"\",\"status\":\"in_progress\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}")]
+    public async Task Manifest_missing_or_empty_fingerprint_is_quarantined(string json)
+    {
+        using var root = new TempOutputRoot();
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), json, CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+
+        Assert.Null(await store.TryReadAsync(CancellationToken.None));
+        Assert.Single(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+    }
+
+    [Fact]
+    public async Task Manifest_missing_status_is_quarantined()
+    {
+        using var root = new TempOutputRoot();
+        var json = "{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}";
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), json, CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+
+        Assert.Null(await store.TryReadAsync(CancellationToken.None));
+        Assert.Single(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+    }
+
+    [Theory]
+    [InlineData("{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"status\":\"in_progress\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}")]
+    [InlineData("{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"status\":\"in_progress\",\"createdAt\":\"2024-01-01T00:00:00+00:00\"}")]
+    public async Task Manifest_missing_timestamps_is_quarantined(string json)
+    {
+        using var root = new TempOutputRoot();
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), json, CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+
+        Assert.Null(await store.TryReadAsync(CancellationToken.None));
+        Assert.Single(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+    }
+
+    [Fact]
+    public async Task Manifest_with_extra_unknown_field_is_accepted()
+    {
+        using var root = new TempOutputRoot();
+        var json = "{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"status\":\"in_progress\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\",\"extra\":42}";
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), json, CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        var read = await store.TryReadAsync(CancellationToken.None);
+
+        Assert.NotNull(read);
+        Assert.Equal("fp", read!.Fingerprint);
+    }
+
+    [Fact]
+    public async Task TryReadAsync_honors_cancellation()
+    {
+        using var root = new TempOutputRoot();
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), "{ not json", CancellationToken.None);
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.TryReadAsync(cts.Token));
+    }
+
+    [Fact]
+    public async Task Quarantine_io_failure_surfaces_as_StorageException()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var root = new TempOutputRoot();
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), "{ not json", CancellationToken.None);
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+
+        var originalMode = File.GetUnixFileMode(root.Path);
+        try
+        {
+            File.SetUnixFileMode(root.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            await Assert.ThrowsAsync<StorageException>(() => store.TryReadAsync(CancellationToken.None));
+        }
+        finally
+        {
+            File.SetUnixFileMode(root.Path, originalMode);
+        }
+    }
+
     private static Manifest SampleManifest(string cursor = "cursor-1")
         => new(
             Manifest.CurrentSchemaVersion,

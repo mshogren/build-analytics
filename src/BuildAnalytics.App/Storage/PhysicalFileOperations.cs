@@ -19,6 +19,8 @@ public sealed class PhysicalFileOperations : IFileOperations
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        // True power-loss fsync durability is out of unit-test scope; tests assert that
+        // this stage is invoked on a non-empty temp file BEFORE the atomic rename.
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None);
         stream.Flush(flushToDisk: true);
         return Task.CompletedTask;

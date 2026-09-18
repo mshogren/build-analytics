@@ -10,7 +10,7 @@ namespace BuildAnalytics.App.Storage;
 
 /// <summary>
 /// File-backed manifest store with a single-writer lock and atomic commits.
-/// Corrupt manifests are quarantined and reported as absent; schema mismatches are typed errors.
+/// Corrupt/manifest-schema mismatches are typed; malformed manifests are quarantined and reported absent.
 /// Reporting uses <see cref="OpenReadOnly(string, TimeProvider?)"/> so it can read while a writer is alive.
 /// </summary>
 public sealed class FileManifestStore : IManifestStore, IDisposable
@@ -59,19 +59,16 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
             return null;
         }
 
-        var bytes = await File.ReadAllBytesAsync(_manifestPath, cancellationToken);
+        var bytes = await StorageFileAccess.ReadAllBytesAsync(_manifestPath, cancellationToken);
 
         try
         {
             using var document = JsonDocument.Parse(bytes);
             var root = document.RootElement;
 
-            if (root.ValueKind != JsonValueKind.Object ||
-                !root.TryGetProperty("schemaVersion", out var schemaVersionElement) ||
-                schemaVersionElement.ValueKind != JsonValueKind.Number ||
-                !schemaVersionElement.TryGetInt32(out var schemaVersion))
+            if (!TryReadSchemaVersion(root, out var schemaVersion))
             {
-                Quarantine();
+                Quarantine(cancellationToken);
                 return null;
             }
 
@@ -80,10 +77,16 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
                 throw new UnsupportedSchemaVersionException(Manifest.CurrentSchemaVersion, schemaVersion);
             }
 
-            var manifest = root.Deserialize<Manifest>(BuildAnalyticsJson.Options);
-            if (manifest is null)
+            if (!HasRequiredFields(root))
             {
-                Quarantine();
+                Quarantine(cancellationToken);
+                return null;
+            }
+
+            var manifest = root.Deserialize<Manifest>(BuildAnalyticsJson.Options);
+            if (manifest is null || string.IsNullOrWhiteSpace(manifest.Fingerprint))
+            {
+                Quarantine(cancellationToken);
                 return null;
             }
 
@@ -91,7 +94,7 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
         }
         catch (JsonException)
         {
-            Quarantine();
+            Quarantine(cancellationToken);
             return null;
         }
     }
@@ -115,11 +118,44 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
         _lock = null;
     }
 
+    private static bool TryReadSchemaVersion(JsonElement root, out int schemaVersion)
+    {
+        schemaVersion = 0;
+        return root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("schemaVersion", out var element)
+            && element.ValueKind == JsonValueKind.Number
+            && element.TryGetInt32(out schemaVersion);
+    }
+
+    private static bool HasRequiredFields(JsonElement root)
+        => IsNonEmptyString(root, "fingerprint")
+           && root.TryGetProperty("status", out _)
+           && root.TryGetProperty("createdAt", out _)
+           && root.TryGetProperty("updatedAt", out _);
+
+    private static bool IsNonEmptyString(JsonElement root, string name)
+        => root.TryGetProperty(name, out var element)
+           && element.ValueKind == JsonValueKind.String
+           && !string.IsNullOrWhiteSpace(element.GetString());
+
     private FileStream AcquireLock()
     {
+        FileStream stream;
         try
         {
-            var stream = new FileStream(_lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            stream = new FileStream(_lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (Exception exception) when (LockFailureClassifier.Classify(exception) == LockFailure.Contention)
+        {
+            throw new OutputRootInUseException(exception);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new StorageException("Could not open the manifest lock.", exception);
+        }
+
+        try
+        {
             var payload = Encoding.UTF8.GetBytes(
                 $"{Environment.ProcessId.ToString(CultureInfo.InvariantCulture)}\n{_timeProvider.GetUtcNow().ToString("O", CultureInfo.InvariantCulture)}");
             stream.SetLength(0);
@@ -127,16 +163,31 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
             stream.Flush(flushToDisk: true);
             return stream;
         }
-        catch (IOException exception)
+        catch (Exception exception)
         {
-            throw new OutputRootInUseException(exception);
+            stream.Dispose();
+            throw new StorageException("Could not initialize the manifest lock.", exception);
         }
     }
 
-    private void Quarantine()
+    private void Quarantine(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var timestamp = _timeProvider.GetUtcNow().ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
         var target = Path.Combine(_outputRoot, $"manifest.corrupt-{timestamp}-{Guid.NewGuid():N}.json");
-        File.Move(_manifestPath, target, overwrite: false);
+
+        try
+        {
+            File.Move(_manifestPath, target, overwrite: false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new StorageException("Could not quarantine the corrupt manifest.", exception);
+        }
     }
 }

@@ -295,4 +295,26 @@ public sealed class FileRunStoreTests
 
         Assert.Equal([2], await store.ListRunIdsAsync(CancellationToken.None));
     }
+
+    [Fact]
+    public async Task Atomic_write_flushes_non_empty_temp_before_rename()
+    {
+        using var root = new TempOutputRoot();
+        long flushedLength = -1;
+        var recording = new RecordingFileOperations(
+            new PhysicalFileOperations(),
+            beforeDelegate: (operation, path) =>
+            {
+                if (operation == FileOperation.FlushToDisk)
+                {
+                    flushedLength = new FileInfo(path).Length;
+                }
+            });
+        var store = new FileRunStore(root.Path, recording);
+
+        await store.WriteAsync(TestRuns.Create(id: 4), CancellationToken.None);
+
+        Assert.True(flushedLength > 0, $"Flush must run on a non-empty temp file (observed {flushedLength}).");
+        Assert.Equal(FileOperation.Rename, recording.Calls[^1].Operation);
+    }
 }

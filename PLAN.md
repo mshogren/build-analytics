@@ -316,6 +316,33 @@ truncate.
     `id` must not create a bogus `runs/0` entry). A requested `runId <= 0` throws
     `ArgumentOutOfRangeException`; `WriteAsync` likewise rejects a run with
     `Id <= 0`, and `ListRunIdsAsync` skips non-positive directories.
+43. **Flush is verified, not assumed.** Tests assert `FlushToDiskAsync` runs on a
+    non-empty temp before rename and fault-inject at write-temp and flush; true
+    fsync durability is explicitly out of unit-test scope.
+44. **Lock failure typing and cleanup.** Only "already locked" maps to
+    `OutputRootInUseException`; other IO failures map to `StorageException`. The
+    opened lock stream is disposed on any post-open failure.
+45. **Delete-sharing reads.** Run and manifest reads open with
+    `FileShare.ReadWrite | FileShare.Delete`, so a concurrent reader cannot block
+    the writer's rename on Windows. The flags come from a small testable seam so a
+    regression back to `FileShare.Read` fails a test; real Windows behaviour is
+    manual verification.
+46. **Quarantine** honors cancellation; a quarantine IO failure surfaces as
+    `StorageException`, never a raw `IOException`.
+47. **Manifest validation.** A missing/empty `Fingerprint` or missing `status` is
+    malformed and is quarantined like other corrupt content.
+48. **`StorageException`** (unexpected storage IO failure) joins `Core.Errors`.
+49. **Lock-failure classification** is a pure helper: a sharing-violation HResult
+    (`0x80070020`) or Unix `EWOULDBLOCK`/`EAGAIN` means contention
+    (`OutputRootInUseException`); anything else means `StorageException`.
+50. **Required manifest fields** — `schemaVersion` (present and current),
+    `fingerprint` (non-empty), `status`, `createdAt`, `updatedAt`. Missing any is
+    corruption and quarantines; `schemaVersion` is validated first so a
+    valid-but-wrong version never quarantines.
+
+Accepted limitations (documented, no action): stale `.tmp` files are ignored by
+`ListRunIdsAsync` and are not garbage-collected at startup; `Manifest` list
+equality is order-sensitive, which is safe while construction stays canonical.
 
 ## Design Review Disposition (F1–F17)
 

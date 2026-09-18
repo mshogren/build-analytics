@@ -49,7 +49,7 @@ public sealed class FileRunStore : IRunStore
             return null;
         }
 
-        var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+        var bytes = await StorageFileAccess.ReadAllBytesAsync(path, cancellationToken);
 
         try
         {
