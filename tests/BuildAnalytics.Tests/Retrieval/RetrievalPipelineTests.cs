@@ -772,8 +772,10 @@ public sealed class RetrievalPipelineTests
     [InlineData(ManifestStatus.Paused)]
     [InlineData(ManifestStatus.Failed)]
     [InlineData(ManifestStatus.InProgress)]
-    public async Task SCRATCH_partial_root_pages_past_a_no_new_runs_page(ManifestStatus status)
+    public async Task Non_completed_root_pages_past_a_page_that_adds_no_new_runs(ManifestStatus status)
     {
+        // ADR-108: the early stop is gated on a completed root; a paused/failed/in-progress root
+        // must keep paging, otherwise builds on older pages would be silently missed.
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Seed(1);
         manifests.Current = ManifestWith(status, clock, Fingerprint());
