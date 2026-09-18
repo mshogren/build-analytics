@@ -1,6 +1,6 @@
 namespace BuildAnalytics.Core.Timing;
 
-/// <summary>Aggregated timing metrics for a set of runs. Durations are in seconds.</summary>
+/// <summary>Aggregated timing metrics for a set of runs. Durations are raw seconds.</summary>
 public sealed record TimingTotals(
     int RunCount,
     int SucceededCount,
@@ -13,10 +13,10 @@ public sealed record TimingTotals(
     double? AverageRunDurationSeconds,
     double? AverageTotalDurationSeconds);
 
-/// <summary>Timing totals for a single UTC month, or the unknown bucket.</summary>
+/// <summary>Rollup totals for one UTC month, or the unknown bucket.</summary>
 public sealed record MonthlyTimingSummary(string Month, TimingTotals Totals);
 
-/// <summary>Overall timing totals plus per-month breakdown.</summary>
+/// <summary>Overall totals plus the per-month breakdown.</summary>
 public sealed record TimingSummary(TimingTotals Overall, IReadOnlyList<MonthlyTimingSummary> Months)
 {
     public bool Equals(TimingSummary? other)

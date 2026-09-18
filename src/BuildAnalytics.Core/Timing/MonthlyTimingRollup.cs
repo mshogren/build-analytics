@@ -1,14 +1,14 @@
 using System.Globalization;
+using BuildAnalytics.Core.Models;
 
 namespace BuildAnalytics.Core.Timing;
 
-/// <summary>Pure aggregation of <see cref="BuildRun"/> timing data. Performs no IO and reads no ambient clock.</summary>
-public static class TimingSummarizer
+/// <summary>
+/// Pure overall + monthly aggregation. Months are real UTC months ascending, with the
+/// unknown bucket last. Averages ignore nulls and are rounded to 2dp at rollup time.
+/// </summary>
+public static class MonthlyTimingRollup
 {
-    /// <summary>Runs waiting strictly more than this many seconds are counted as "wait over 5 min".</summary>
-    public const double WaitOverFiveMinutesThresholdSeconds = 300d;
-
-    /// <summary>Month key used for runs without a queue time.</summary>
     public const string UnknownMonthKey = "(unknown)";
 
     public static TimingSummary Summarize(IEnumerable<BuildRun> runs)
@@ -19,21 +19,21 @@ public static class TimingSummarizer
 
         var months = snapshot
             .GroupBy(run => MonthKey(run.QueueTime), StringComparer.Ordinal)
-            .Select(group => new MonthlyTimingSummary(group.Key, SummarizeTotals(group)))
+            .Select(group => new MonthlyTimingSummary(group.Key, Totals(group)))
             .OrderBy(summary => string.Equals(summary.Month, UnknownMonthKey, StringComparison.Ordinal) ? 1 : 0)
             .ThenBy(summary => summary.Month, StringComparer.Ordinal)
             .ToList();
 
-        return new TimingSummary(SummarizeTotals(snapshot), months);
+        return new TimingSummary(Totals(snapshot), months);
     }
 
-    /// <summary>UTC year-month key (<c>yyyy-MM</c>) for a timestamp, or <see cref="UnknownMonthKey"/>.</summary>
+    /// <summary>UTC year-month key (<c>yyyy-MM</c>), or <see cref="UnknownMonthKey"/> when absent.</summary>
     public static string MonthKey(DateTimeOffset? queueTime)
         => queueTime is { } value
             ? value.UtcDateTime.ToString("yyyy-MM", CultureInfo.InvariantCulture)
             : UnknownMonthKey;
 
-    private static TimingTotals SummarizeTotals(IEnumerable<BuildRun> runs)
+    private static TimingTotals Totals(IEnumerable<BuildRun> runs)
     {
         var runCount = 0;
         var succeeded = 0;
@@ -56,11 +56,16 @@ public static class TimingSummarizer
             else if (Matches(run.Result, "canceled")) canceled++;
 
             if (Matches(run.Status, "notStarted")) notStarted++;
-            if (run.QueueWaitSeconds is { } wait && wait > WaitOverFiveMinutesThresholdSeconds) waitOverFiveMinutes++;
 
-            queueWaits.Add(run.QueueWaitSeconds);
-            runDurations.Add(run.RunDurationSeconds);
-            totalDurations.Add(run.TotalDurationSeconds);
+            var timing = TimingCalculator.Calculate(run);
+            if (timing.QueueWaitSeconds is { } wait && wait > TimingCalculator.WaitOverFiveMinutesThresholdSeconds)
+            {
+                waitOverFiveMinutes++;
+            }
+
+            queueWaits.Add(timing.QueueWaitSeconds);
+            runDurations.Add(timing.RunDurationSeconds);
+            totalDurations.Add(timing.TotalDurationSeconds);
         }
 
         return new TimingTotals(

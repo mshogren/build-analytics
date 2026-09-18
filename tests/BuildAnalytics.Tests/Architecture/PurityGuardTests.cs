@@ -4,7 +4,7 @@ namespace BuildAnalytics.Tests.Architecture;
 
 /// <summary>
 /// Enforces the Core charter: the pure project must not reference IO, the network,
-/// an ambient clock, or process-wide environment state.
+/// an ambient clock, randomness, or process-wide environment state.
 /// </summary>
 public sealed class PurityGuardTests
 {
@@ -19,21 +19,22 @@ public sealed class PurityGuardTests
         "DateTime.Today",
         "DateTimeOffset.Now",
         "DateTimeOffset.UtcNow",
+        "File.",
+        "Directory.",
         "Random",
-        "Guid.NewGuid",
+        "Guid",
         "Environment."
     ];
 
     [Fact]
-    public void Core_sources_contain_no_io_network_clock_or_ambient_environment_usage()
+    public void Core_sources_contain_no_io_network_clock_randomness_or_ambient_environment_usage()
     {
-        var coreTimingRoot = Path.Combine(RepoRoot(), "src", "BuildAnalytics.Core", "Timing");
+        var coreRoot = Path.Combine(RepoRoot(), "src", "BuildAnalytics.Core");
         var violations = new List<string>();
 
-        foreach (var file in Directory.EnumerateFiles(coreTimingRoot, "*.cs", SearchOption.AllDirectories))
+        foreach (var file in Directory.EnumerateFiles(coreRoot, "*.cs", SearchOption.AllDirectories))
         {
-            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) ||
-                file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            if (IsBuildArtifact(file))
             {
                 continue;
             }
@@ -50,6 +51,10 @@ public sealed class PurityGuardTests
 
         Assert.Empty(violations);
     }
+
+    private static bool IsBuildArtifact(string path)
+        => path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) ||
+           path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
 
     private static string RepoRoot([CallerFilePath] string callerPath = "")
         => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(callerPath)!, "..", "..", ".."));
