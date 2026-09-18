@@ -552,11 +552,14 @@ truncate.
     Excel Table; `Overview` is written as `SUBTOTAL(101–111)` formulas over that
     table (plus hidden 1/0 helper columns for the status counts), so filtering the
     raw sheet updates it. `Monthly` stays **static** with a note that it always
-    covers the full run set, and a `Pivot` sheet is produced from the Runs table
-    for interactive slicing. `COUNTIFS`/`SUMIFS` are deliberately not used — they
+    covers the full run set. **No `Pivot` sheet is shipped:** ClosedXML writes the
+    pivot-cache parts at the package root instead of `/xl/` (non-conformant, and
+    likely to trigger Excel's repair prompt) and emits a pivot with no
+    `<rowItems>`/`<colItems>`; instead the Runs table lets a user insert a native
+    PivotTable in one step. `COUNTIFS`/`SUMIFS` are deliberately not used — they
     ignore autofilter. The workbook is set to full-calculate on load, and tests
-    assert the formulas/table/pivot structure rather than computed values (Excel
-    computes those on open).
+    assert the formula/table structure and the hidden helpers rather than computed
+    values (Excel computes those on open).
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
