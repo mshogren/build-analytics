@@ -64,7 +64,7 @@ public sealed class RetrievalPipeline(
 
         var createdAt = existing?.CreatedAt ?? clock.GetUtcNow();
         var failedRunIds = new List<int>(existing?.FailedRunIds ?? []);
-        var onDiskRunIds = new HashSet<int>(existingRunIds);
+        var existingIdSet = new HashSet<int>(existingRunIds);
         var cursor = existing?.Cursor;
 
         // ADR-68: a fingerprinted, resumable root exists before the first list call.
@@ -123,7 +123,7 @@ public sealed class RetrievalPipeline(
                     // ADR-7/R11: on a rebuild/replay, never re-fetch detail or overwrite an
                     // on-disk file the active policy already accepts (that would downgrade a
                     // detail source back to a thin list row).
-                    if (onDiskRunIds.Contains(listed.Id))
+                    if (existingIdSet.Contains(listed.Id))
                     {
                         var existingRun = await TryReadExistingRunAsync(listed.Id, cancellationToken).ConfigureAwait(false);
                         if (existingRun is not null
@@ -154,7 +154,6 @@ public sealed class RetrievalPipeline(
 
                     await runs.WriteAsync(run, cancellationToken).ConfigureAwait(false);
                     runsWritten++;
-                    onDiskRunIds.Add(run.Id);
                 }
             }
             catch (PipelinePausedException exception)
