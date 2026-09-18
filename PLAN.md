@@ -575,7 +575,9 @@ handle it); detail `424` is covered by the generic non-404 abort path with no
 separately named row; a **resume** starting from a stored cursor with prior
 failures behind it can finish below 100% with no 100% tick, since those ids are
 never re-listed — they stay preserved in `FailedRunIds` and self-heal on the next
-refresh.
+refresh; the report/transport DTOs (`BuildPage.Runs`, `TimingReport.Runs`) hold the
+caller's list by reference — they are not value objects (no structural equality)
+and their producers do not mutate them.
 
 ## Design Review Disposition (F1–F17)
 
@@ -668,3 +670,5 @@ and a clean CLI.
 - **ADR-96..103** (progress %, refresh-by-default with failure retry, config file,
 removed unused surface) verified RESOLVED at `0258483` (384 tests, 0 warnings,
 clean tree), including the refresh early-stop regression rows.
+- **ADR-104..105** (per-run progress ticks; raw `Runs` report sheet with typed date
+  cells) verified RESOLVED at `7a6d355` (390 tests, 0 warnings, clean tree).
