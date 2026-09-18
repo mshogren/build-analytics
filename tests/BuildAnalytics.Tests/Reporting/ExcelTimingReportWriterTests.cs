@@ -138,6 +138,28 @@ public sealed class ExcelTimingReportWriterTests
     }
 
     [Fact]
+    public void Runs_sheet_timestamps_are_date_cells_and_nulls_are_blank()
+    {
+        var origin = new DateTimeOffset(2024, 1, 1, 12, 34, 56, TimeSpan.Zero);
+        var run = Run(id: 7, queue: origin, start: origin.AddSeconds(30), finish: origin.AddSeconds(90));
+        var missing = Run(id: 8, queue: null);
+        var report = new TimingReport(MonthlyTimingRollup.Summarize([run, missing]), [run, missing]);
+
+        using var workbook = Open(report);
+        var sheet = workbook.Worksheet("Runs");
+
+        Assert.Equal(XLDataType.DateTime, sheet.Cell(2, 5).DataType);
+        Assert.Equal(XLDataType.DateTime, sheet.Cell(2, 6).DataType);
+        Assert.Equal(XLDataType.DateTime, sheet.Cell(2, 7).DataType);
+        Assert.Equal("yyyy-mm-dd hh:mm:ss", sheet.Cell(2, 5).Style.NumberFormat.Format);
+        Assert.Equal(origin.UtcDateTime, sheet.Cell(2, 5).GetDateTime(), TimeSpan.FromSeconds(1));
+
+        Assert.True(sheet.Cell(3, 5).IsEmpty());
+        Assert.True(sheet.Cell(3, 6).IsEmpty());
+        Assert.True(sheet.Cell(3, 7).IsEmpty());
+    }
+
+    [Fact]
     public void Null_averages_render_as_blank_cells()
     {
         var bytes = ExcelTimingReportWriter.BuildWorkbook(new TimingReport(NullAverageSummary(), []));

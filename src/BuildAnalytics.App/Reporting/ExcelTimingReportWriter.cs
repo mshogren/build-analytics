@@ -1,4 +1,3 @@
-using System.Globalization;
 using BuildAnalytics.App.Storage;
 using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
@@ -21,6 +20,7 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
     private const string MonthlySheet = "Monthly";
     private const string RunsSheet = "Runs";
     private const string SecondsFormat = "0.00";
+    private const string TimestampFormat = "yyyy-mm-dd hh:mm:ss";
 
     private static readonly string[] MonthlyHeaders =
     [
@@ -262,9 +262,14 @@ public sealed class ExcelTimingReportWriter : ITimingReportWriter
 
     private static void WriteTimestamp(IXLWorksheet sheet, int row, int column, DateTimeOffset? value)
     {
-        if (value is { } timestamp)
+        if (value is not { } timestamp)
         {
-            sheet.Cell(row, column).Value = timestamp.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+            return;
         }
+
+        // ADR-105: raw-data columns must be typed date cells so sort/filter/pivot work.
+        var cell = sheet.Cell(row, column);
+        cell.Value = timestamp.UtcDateTime;
+        cell.Style.NumberFormat.Format = TimestampFormat;
     }
 }
