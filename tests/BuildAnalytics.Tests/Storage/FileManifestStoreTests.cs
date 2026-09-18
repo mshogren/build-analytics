@@ -48,6 +48,15 @@ public sealed class FileManifestStoreTests
     }
 
     [Fact]
+    public void Lock_NonLockIoFailure_ThrowsStorageException_NotOutputRootInUse()
+    {
+        using var root = new TempOutputRoot();
+        Directory.CreateDirectory(Path.Combine(root.Path, "manifest.lock"));
+
+        Assert.Throws<StorageException>(() => new FileManifestStore(root.Path, new PhysicalFileOperations()));
+    }
+
+    [Fact]
     public void Reopen_after_dispose_succeeds()
     {
         using var root = new TempOutputRoot();
@@ -118,6 +127,18 @@ public sealed class FileManifestStoreTests
 
         await Assert.ThrowsAsync<UnsupportedSchemaVersionException>(() => store.TryReadAsync(CancellationToken.None));
         Assert.True(File.Exists(manifestPath));
+        Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
+    }
+
+    [Fact]
+    public async Task TryRead_UnsupportedSchemaVersion_WithOtherMissingFields_ThrowsUnsupported_NotQuarantined()
+    {
+        using var root = new TempOutputRoot();
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), "{\"schemaVersion\":99}", CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+
+        await Assert.ThrowsAsync<UnsupportedSchemaVersionException>(() => store.TryReadAsync(CancellationToken.None));
         Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
     }
 
@@ -376,46 +397,34 @@ public sealed class FileManifestStoreTests
         Assert.DoesNotContain(Directory.GetFiles(root.Path), file => file.EndsWith(".tmp", StringComparison.Ordinal));
     }
 
-    [Theory]
-    [InlineData("{\"schemaVersion\":1,\"status\":\"in_progress\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}")]
-    [InlineData("{\"schemaVersion\":1,\"fingerprint\":\"\",\"status\":\"in_progress\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}")]
-    public async Task Manifest_missing_or_empty_fingerprint_is_quarantined(string json)
-    {
-        using var root = new TempOutputRoot();
-        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), json, CancellationToken.None);
-
-        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
-
-        Assert.Null(await store.TryReadAsync(CancellationToken.None));
-        Assert.Single(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
-    }
+    [Fact]
+    public Task Manifest_MissingFingerprint_Quarantined()
+        => AssertManifestQuarantined(
+            "{\"schemaVersion\":1,\"status\":\"in_progress\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}");
 
     [Fact]
-    public async Task Manifest_missing_status_is_quarantined()
-    {
-        using var root = new TempOutputRoot();
-        var json = "{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}";
-        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), json, CancellationToken.None);
+    public Task Manifest_EmptyFingerprint_Quarantined()
+        => AssertManifestQuarantined(
+            "{\"schemaVersion\":1,\"fingerprint\":\"\",\"status\":\"in_progress\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}");
 
-        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+    [Fact]
+    public Task Manifest_MissingStatus_Quarantined()
+        => AssertManifestQuarantined(
+            "{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}");
 
-        Assert.Null(await store.TryReadAsync(CancellationToken.None));
-        Assert.Single(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
-    }
+    [Fact]
+    public Task Manifest_MissingCreatedAt_Quarantined()
+        => AssertManifestQuarantined(
+            "{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"status\":\"in_progress\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}");
 
-    [Theory]
-    [InlineData("{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"status\":\"in_progress\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}")]
-    [InlineData("{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"status\":\"in_progress\",\"createdAt\":\"2024-01-01T00:00:00+00:00\"}")]
-    public async Task Manifest_missing_timestamps_is_quarantined(string json)
-    {
-        using var root = new TempOutputRoot();
-        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), json, CancellationToken.None);
+    [Fact]
+    public Task Manifest_MissingUpdatedAt_Quarantined()
+        => AssertManifestQuarantined(
+            "{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"status\":\"in_progress\",\"createdAt\":\"2024-01-01T00:00:00+00:00\"}");
 
-        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
-
-        Assert.Null(await store.TryReadAsync(CancellationToken.None));
-        Assert.Single(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
-    }
+    [Fact]
+    public Task TryRead_CurrentSchemaVersion_MissingRequiredField_Quarantined()
+        => AssertManifestQuarantined("{\"schemaVersion\":1,\"status\":\"in_progress\"}");
 
     [Fact]
     public async Task Manifest_with_extra_unknown_field_is_accepted()
@@ -432,19 +441,23 @@ public sealed class FileManifestStoreTests
     }
 
     [Fact]
-    public async Task TryReadAsync_honors_cancellation()
+    public async Task Quarantine_HonorsCancellation()
     {
         using var root = new TempOutputRoot();
-        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), "{ not json", CancellationToken.None);
-        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        var manifestPath = Path.Combine(root.Path, "manifest.json");
+        await File.WriteAllTextAsync(manifestPath, "{ not json", CancellationToken.None);
+
         using var cts = new CancellationTokenSource();
-        cts.Cancel();
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations(), new CancellingTimeProvider(cts));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.TryReadAsync(cts.Token));
+
+        Assert.True(File.Exists(manifestPath));
+        Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
     }
 
     [Fact]
-    public async Task Quarantine_io_failure_surfaces_as_StorageException()
+    public async Task Quarantine_IoFailure_ThrowsStorageException()
     {
         if (OperatingSystem.IsWindows())
         {
@@ -465,6 +478,17 @@ public sealed class FileManifestStoreTests
         {
             File.SetUnixFileMode(root.Path, originalMode);
         }
+    }
+
+    private static async Task AssertManifestQuarantined(string json)
+    {
+        using var root = new TempOutputRoot();
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), json, CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+
+        Assert.Null(await store.TryReadAsync(CancellationToken.None));
+        Assert.Single(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
     }
 
     private static Manifest SampleManifest(string cursor = "cursor-1")
@@ -495,4 +519,22 @@ public sealed class FileManifestStoreTests
           "definitionNames": []
         }
         """;
+
+    private sealed class CancellingTimeProvider : TimeProvider
+    {
+        private readonly CancellationTokenSource _cts;
+        private int _calls;
+
+        public CancellingTimeProvider(CancellationTokenSource cts) => _cts = cts;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            if (Interlocked.Increment(ref _calls) > 1)
+            {
+                _cts.Cancel();
+            }
+
+            return DateTimeOffset.UnixEpoch;
+        }
+    }
 }

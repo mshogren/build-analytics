@@ -177,6 +177,8 @@ public sealed class FileManifestStore : IManifestStore, IDisposable
         var timestamp = _timeProvider.GetUtcNow().ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
         var target = Path.Combine(_outputRoot, $"manifest.corrupt-{timestamp}-{Guid.NewGuid():N}.json");
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         try
         {
             File.Move(_manifestPath, target, overwrite: false);

@@ -5,7 +5,7 @@ namespace BuildAnalytics.Tests.Storage;
 public sealed class StorageFileAccessTests
 {
     [Fact]
-    public void ReadShare_is_readwrite_and_delete_not_read_only()
+    public void ReadShareFlags_AreReadWriteOrDelete()
     {
         Assert.Equal(FileShare.ReadWrite | FileShare.Delete, StorageFileAccess.ReadShare);
         Assert.NotEqual(FileShare.Read, StorageFileAccess.ReadShare);

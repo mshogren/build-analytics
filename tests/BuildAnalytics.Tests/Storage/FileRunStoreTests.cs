@@ -297,7 +297,7 @@ public sealed class FileRunStoreTests
     }
 
     [Fact]
-    public async Task Atomic_write_flushes_non_empty_temp_before_rename()
+    public async Task WriteAsync_FlushInvokedOnNonEmptyTempBeforeRename()
     {
         using var root = new TempOutputRoot();
         long flushedLength = -1;
@@ -316,5 +316,34 @@ public sealed class FileRunStoreTests
 
         Assert.True(flushedLength > 0, $"Flush must run on a non-empty temp file (observed {flushedLength}).");
         Assert.Equal(FileOperation.Rename, recording.Calls[^1].Operation);
+    }
+
+    [Fact]
+    public Task WriteAsync_FaultAtWriteTemp_PreviousTargetIntact_NoTempLeak()
+        => AssertRunOverwriteFaultPreservesTarget(FileOperation.WriteTemp);
+
+    [Fact]
+    public Task WriteAsync_FaultAtFlush_PreviousTargetIntact_NoTempLeak()
+        => AssertRunOverwriteFaultPreservesTarget(FileOperation.FlushToDisk);
+
+    private static async Task AssertRunOverwriteFaultPreservesTarget(FileOperation failAt)
+    {
+        using var root = new TempOutputRoot();
+        var initial = new FileRunStore(root.Path, new PhysicalFileOperations());
+        var first = TestRuns.Create(id: 4, buildNumber: "first");
+        await initial.WriteAsync(first, CancellationToken.None);
+
+        var failing = new RecordingFileOperations(
+            new PhysicalFileOperations(),
+            (operation, path) => operation == failAt && path.Contains("run.json", StringComparison.Ordinal)
+                ? new IOException("injected")
+                : null);
+        var store = new FileRunStore(root.Path, failing);
+
+        await Assert.ThrowsAsync<IOException>(() => store.WriteAsync(TestRuns.Create(id: 4, buildNumber: "second"), CancellationToken.None));
+
+        Assert.Equal(first, await initial.TryReadAsync(4, CancellationToken.None));
+        var runDirectory = Path.Combine(root.Path, "runs", "4");
+        Assert.DoesNotContain(Directory.GetFiles(runDirectory), file => file.EndsWith(".tmp", StringComparison.Ordinal));
     }
 }
