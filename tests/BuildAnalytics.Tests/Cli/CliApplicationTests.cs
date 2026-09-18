@@ -266,7 +266,6 @@ public sealed class CliApplicationTests
             Manifest.CurrentSchemaVersion,
             "fp",
             ManifestStatus.Completed,
-            "cursor",
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,

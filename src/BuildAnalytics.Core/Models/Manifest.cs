@@ -12,7 +12,8 @@ public enum ManifestStatus
 }
 
 /// <summary>
-/// Retrieval progress for one output root. The cursor is the authoritative progress field.
+/// Retrieval progress for one output root. There is no listing cursor (ADR-108); the durable
+/// progress marker is the set of run files on disk.
 /// List inputs are defensively copied and equality is structural.
 /// </summary>
 public sealed record Manifest
@@ -24,7 +25,6 @@ public sealed record Manifest
         int schemaVersion,
         string fingerprint,
         ManifestStatus status,
-        string? cursor,
         DateTimeOffset createdAt,
         DateTimeOffset updatedAt,
         string? lastError,
@@ -33,7 +33,6 @@ public sealed record Manifest
         SchemaVersion = schemaVersion;
         Fingerprint = fingerprint;
         Status = status;
-        Cursor = cursor;
         CreatedAt = createdAt;
         UpdatedAt = updatedAt;
         LastError = lastError;
@@ -45,8 +44,6 @@ public sealed record Manifest
     public string Fingerprint { get; }
 
     public ManifestStatus Status { get; }
-
-    public string? Cursor { get; }
 
     public DateTimeOffset CreatedAt { get; }
 
@@ -61,7 +58,6 @@ public sealed record Manifest
            && SchemaVersion == other.SchemaVersion
            && string.Equals(Fingerprint, other.Fingerprint, StringComparison.Ordinal)
            && Status == other.Status
-           && string.Equals(Cursor, other.Cursor, StringComparison.Ordinal)
            && CreatedAt == other.CreatedAt
            && UpdatedAt == other.UpdatedAt
            && string.Equals(LastError, other.LastError, StringComparison.Ordinal)
@@ -73,7 +69,6 @@ public sealed record Manifest
         hash.Add(SchemaVersion);
         hash.Add(Fingerprint);
         hash.Add(Status);
-        hash.Add(Cursor);
         hash.Add(CreatedAt);
         hash.Add(UpdatedAt);
         hash.Add(LastError);

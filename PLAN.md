@@ -592,10 +592,7 @@ when a non-conforming response carries **both** `Retry-After` forms the executor
 takes header order rather than strictly preferring delta-seconds; `FileRunStore.TryReadAsync`
 does not wrap a raw read `IOException` in `StorageException` (upstream layers
 handle it); detail `424` is covered by the generic non-404 abort path with no
-separately named row; a **resume** starting from a stored cursor with prior
-failures behind it can finish below 100% with no 100% tick, since those ids are
-never re-listed — they stay preserved in `FailedRunIds` and self-heal on the next
-refresh; the report/transport DTOs (`BuildPage.Runs`, `TimingReport.Runs`) hold the
+separately named row; the report/transport DTOs (`BuildPage.Runs`, `TimingReport.Runs`) hold the
 caller's list by reference — they are not value objects (no structural equality)
 and their producers do not mutate them; the workbook's Excel **runtime** behaviour is
 unverified in this environment — `SUMIFS`/`AVERAGEIFS` with the `""` blank criterion

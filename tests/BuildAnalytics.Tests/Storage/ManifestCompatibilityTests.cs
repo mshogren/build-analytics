@@ -51,7 +51,6 @@ public sealed class ManifestCompatibilityTests
             Manifest.CurrentSchemaVersion,
             fingerprint,
             ManifestStatus.InProgress,
-            null,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,

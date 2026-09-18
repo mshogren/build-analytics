@@ -34,7 +34,6 @@ public sealed class FileManifestStoreTests
         Assert.Equal(manifest.SchemaVersion, read!.SchemaVersion);
         Assert.Equal(manifest.Fingerprint, read.Fingerprint);
         Assert.Equal(manifest.Status, read.Status);
-        Assert.Equal(manifest.Cursor, read.Cursor);
         Assert.Equal(manifest.CreatedAt, read.CreatedAt);
     }
 
@@ -264,7 +263,7 @@ public sealed class FileManifestStoreTests
         Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
 
         // The writer's lock is still valid and commits continue to work.
-        await writer.CommitAsync(SampleManifest(cursor: "cursor-2"), CancellationToken.None);
+        await writer.CommitAsync(SampleManifest(), CancellationToken.None);
         Assert.NotNull(await reader.TryReadAsync(CancellationToken.None));
     }
 
@@ -355,7 +354,7 @@ public sealed class FileManifestStoreTests
     }
 
     [Fact]
-    public async Task AfterQuarantine_NextCommitStartsCursorNull_AndRescanUpserts()
+    public async Task AfterQuarantine_NextCommitAndRescanUpserts()
     {
         using var root = new TempOutputRoot();
         var runStore = new FileRunStore(root.Path, new PhysicalFileOperations());
@@ -367,13 +366,13 @@ public sealed class FileManifestStoreTests
         Assert.Equal([11], await runStore.ListRunIdsAsync(CancellationToken.None));
 
         var rebuilt = new Manifest(
-            Manifest.CurrentSchemaVersion, "fp", ManifestStatus.InProgress, null,
+            Manifest.CurrentSchemaVersion, "fp", ManifestStatus.InProgress,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, null, []);
         await store.CommitAsync(rebuilt, CancellationToken.None);
         await runStore.WriteAsync(TestRuns.Create(id: 11, buildNumber: "second"), CancellationToken.None);
 
         var read = await store.TryReadAsync(CancellationToken.None);
-        Assert.Null(read!.Cursor);
+        Assert.NotNull(read);
         Assert.Equal([11], await runStore.ListRunIdsAsync(CancellationToken.None));
     }
 
@@ -427,7 +426,7 @@ public sealed class FileManifestStoreTests
 
         using (var initial = new FileManifestStore(root.Path, new PhysicalFileOperations()))
         {
-            await initial.CommitAsync(SampleManifest(cursor: "a"), CancellationToken.None);
+            await initial.CommitAsync(SampleManifest(lastError: "a"), CancellationToken.None);
         }
 
         var failing = new RecordingFileOperations(
@@ -438,12 +437,12 @@ public sealed class FileManifestStoreTests
 
         using (var store = new FileManifestStore(root.Path, failing))
         {
-            await Assert.ThrowsAsync<IOException>(() => store.CommitAsync(SampleManifest(cursor: "b"), CancellationToken.None));
+            await Assert.ThrowsAsync<IOException>(() => store.CommitAsync(SampleManifest(lastError: "b"), CancellationToken.None));
         }
 
         using var reader = FileManifestStore.OpenReadOnly(root.Path);
         var read = await reader.TryReadAsync(CancellationToken.None);
-        Assert.Equal("a", read!.Cursor);
+        Assert.Equal("a", read!.LastError);
     }
 
     [Fact]
@@ -452,9 +451,8 @@ public sealed class FileManifestStoreTests
         using var root = new TempOutputRoot();
         using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
         var manifest = new Manifest(
-            Manifest.CurrentSchemaVersion, "fp", ManifestStatus.InProgress, null,
+            Manifest.CurrentSchemaVersion, "fp", ManifestStatus.InProgress,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, "boom", []);
-
         await store.CommitAsync(manifest, CancellationToken.None);
 
         var text = await File.ReadAllTextAsync(Path.Combine(root.Path, "manifest.json"), CancellationToken.None);
@@ -472,7 +470,7 @@ public sealed class FileManifestStoreTests
 
         using (var initial = new FileManifestStore(root.Path, new PhysicalFileOperations()))
         {
-            await initial.CommitAsync(SampleManifest(cursor: "a"), CancellationToken.None);
+            await initial.CommitAsync(SampleManifest(lastError: "a"), CancellationToken.None);
         }
 
         var failing = new RecordingFileOperations(
@@ -483,11 +481,11 @@ public sealed class FileManifestStoreTests
 
         using (var store = new FileManifestStore(root.Path, failing))
         {
-            await Assert.ThrowsAsync<IOException>(() => store.CommitAsync(SampleManifest(cursor: "b"), CancellationToken.None));
+            await Assert.ThrowsAsync<IOException>(() => store.CommitAsync(SampleManifest(lastError: "b"), CancellationToken.None));
         }
 
         using var reader = FileManifestStore.OpenReadOnly(root.Path);
-        Assert.Equal("a", (await reader.TryReadAsync(CancellationToken.None))!.Cursor);
+        Assert.Equal("a", (await reader.TryReadAsync(CancellationToken.None))!.LastError);
         Assert.DoesNotContain(Directory.GetFiles(root.Path), file => file.EndsWith(".tmp", StringComparison.Ordinal));
     }
 
@@ -532,6 +530,21 @@ public sealed class FileManifestStoreTests
 
         Assert.NotNull(read);
         Assert.Equal("fp", read!.Fingerprint);
+    }
+
+    [Fact]
+    public async Task Manifest_with_legacy_cursor_field_is_accepted()
+    {
+        using var root = new TempOutputRoot();
+        var json = "{\"schemaVersion\":1,\"fingerprint\":\"fp\",\"status\":\"in_progress\",\"cursor\":\"legacy-token\",\"createdAt\":\"2024-01-01T00:00:00+00:00\",\"updatedAt\":\"2024-01-01T00:00:00+00:00\"}";
+        await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), json, CancellationToken.None);
+
+        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
+        var read = await store.TryReadAsync(CancellationToken.None);
+
+        Assert.NotNull(read);
+        Assert.Equal("fp", read!.Fingerprint);
+        Assert.Equal(ManifestStatus.InProgress, read.Status);
     }
 
     [Fact]
@@ -585,15 +598,14 @@ public sealed class FileManifestStoreTests
         Assert.Single(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
     }
 
-    private static Manifest SampleManifest(string cursor = "cursor-1")
+    private static Manifest SampleManifest(string? lastError = null)
         => new(
             Manifest.CurrentSchemaVersion,
             "fp-1",
             ManifestStatus.InProgress,
-            cursor,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch.AddMinutes(1),
-            null,
+            lastError,
             []);
 
     private static string ValidManifestJson(int schemaVersion)
@@ -602,7 +614,6 @@ public sealed class FileManifestStoreTests
           "schemaVersion": {{schemaVersion}},
           "fingerprint": "fp",
           "status": "in_progress",
-          "cursor": null,
           "createdAt": "2024-01-01T00:00:00+00:00",
           "updatedAt": "2024-01-01T00:00:00+00:00",
           "lastError": null,

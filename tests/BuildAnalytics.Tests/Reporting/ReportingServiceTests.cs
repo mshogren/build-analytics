@@ -233,7 +233,6 @@ public sealed class ReportingServiceTests
             Manifest.CurrentSchemaVersion,
             "fp",
             status,
-            "cursor",
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,

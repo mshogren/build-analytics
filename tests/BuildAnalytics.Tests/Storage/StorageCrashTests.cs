@@ -41,21 +41,6 @@ public sealed class StorageCrashTests
         Assert.NotNull(await reopenedManifest.TryReadAsync(CancellationToken.None));
     }
 
-    [Fact]
-    public async Task Cursor_IsAuthoritative_NotCompletedSet()
-    {
-        var properties = typeof(Manifest).GetProperties().Select(property => property.Name).ToArray();
-        Assert.Contains("Cursor", properties);
-        Assert.DoesNotContain(properties, name => name.Contains("Completed", StringComparison.Ordinal));
-
-        using var root = new TempOutputRoot();
-        using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
-        await store.CommitAsync(SampleManifest(cursor: "c1"), CancellationToken.None);
-
-        var read = await store.TryReadAsync(CancellationToken.None);
-        Assert.Equal("c1", read!.Cursor);
-    }
-
     [Theory]
     [InlineData(FileOperation.WriteTemp)]
     [InlineData(FileOperation.FlushToDisk)]
@@ -72,21 +57,21 @@ public sealed class StorageCrashTests
         var runStore = new FileRunStore(root.Path, new PhysicalFileOperations());
 
         await runStore.WriteAsync(TestRuns.Create(id: 11), CancellationToken.None);
-        await Assert.ThrowsAsync<IOException>(() => manifestStore.CommitAsync(SampleManifest(cursor: "c1"), CancellationToken.None));
+        await Assert.ThrowsAsync<IOException>(() => manifestStore.CommitAsync(SampleManifest(), CancellationToken.None));
 
         Assert.Equal([11], await runStore.ListRunIdsAsync(CancellationToken.None));
         Assert.Null(await manifestStore.TryReadAsync(CancellationToken.None));
     }
 
     [Fact]
-    public async Task Fault_AfterFirstRunBeforeSecond_CursorUnchanged()
+    public async Task Fault_AfterFirstRunBeforeSecond_LeavesManifestNotCompletedAndRunsIntact()
     {
         using var root = new TempOutputRoot();
         var runStore = new FileRunStore(root.Path, new PhysicalFileOperations());
         await runStore.WriteAsync(TestRuns.Create(id: 1), CancellationToken.None);
 
         using var manifestStore = new FileManifestStore(root.Path, new PhysicalFileOperations());
-        await manifestStore.CommitAsync(SampleManifest(cursor: "c1"), CancellationToken.None);
+        await manifestStore.CommitAsync(SampleManifest(), CancellationToken.None);
 
         var failingRuns = new FileRunStore(
             root.Path,
@@ -96,11 +81,11 @@ public sealed class StorageCrashTests
         await Assert.ThrowsAsync<IOException>(() => failingRuns.WriteAsync(TestRuns.Create(id: 2), CancellationToken.None));
 
         Assert.Equal([1], await runStore.ListRunIdsAsync(CancellationToken.None));
-        Assert.Equal("c1", (await manifestStore.TryReadAsync(CancellationToken.None))!.Cursor);
+        Assert.Equal(ManifestStatus.InProgress, (await manifestStore.TryReadAsync(CancellationToken.None))!.Status);
     }
 
     [Fact]
-    public async Task Fault_BeforeManifestCommit_CursorUnchanged()
+    public async Task Fault_BeforeManifestCommit_LeavesManifestNotCompletedAndRunsIntact()
     {
         using var root = new TempOutputRoot();
         var runStore = new FileRunStore(root.Path, new PhysicalFileOperations());
@@ -113,23 +98,22 @@ public sealed class StorageCrashTests
                 ? new IOException("injected")
                 : null);
         using var manifestStore = new FileManifestStore(root.Path, failing);
-        await manifestStore.CommitAsync(SampleManifest(cursor: "c1"), CancellationToken.None);
+        await manifestStore.CommitAsync(SampleManifest(), CancellationToken.None);
 
         await runStore.WriteAsync(TestRuns.Create(id: 2), CancellationToken.None);
 
         failNext = true;
-        await Assert.ThrowsAsync<IOException>(() => manifestStore.CommitAsync(SampleManifest(cursor: "c2"), CancellationToken.None));
+        await Assert.ThrowsAsync<IOException>(() => manifestStore.CommitAsync(SampleManifest(ManifestStatus.Completed), CancellationToken.None));
 
         Assert.Equal([1, 2], await runStore.ListRunIdsAsync(CancellationToken.None));
-        Assert.Equal("c1", (await manifestStore.TryReadAsync(CancellationToken.None))!.Cursor);
+        Assert.Equal(ManifestStatus.InProgress, (await manifestStore.TryReadAsync(CancellationToken.None))!.Status);
     }
 
-    private static Manifest SampleManifest(string cursor = "cursor-1")
+    private static Manifest SampleManifest(ManifestStatus status = ManifestStatus.InProgress)
         => new(
             Manifest.CurrentSchemaVersion,
             "fp",
-            ManifestStatus.InProgress,
-            cursor,
+            status,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,

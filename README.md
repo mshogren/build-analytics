@@ -44,10 +44,11 @@ Options:
 | `--config <path>` | no | Config file to load (see below) |
 
 **Resuming and refreshing:** re-running the same command picks up builds that
-appeared since the last run. A run that stops (Ctrl+C, a throttle, a failure) is
-checkpointed per page in `manifest.json`; a completed root is re-listed from the
-top, already-stored runs are not re-fetched, and paging stops as soon as a page
-adds no new runs. A no-new-builds run costs a single list call.
+appeared since the last run. There is **no listing cursor**: a resume re-lists
+from the beginning and skips runs already stored on disk, so an interrupted run
+never trusts a partial list. A completed root is re-listed from the top and
+paging stops as soon as a page adds no new runs. A no-new-builds run costs a
+single list call.
 
 **Progress:** retrieval writes coarse progress to stderr — a start line, one
 line per page, and a percentage every 5%. The percentage counts runs already on
@@ -108,7 +109,7 @@ a hard usage error naming `AZDO_PAT`.
 
 ```
 <output-root>/
-  manifest.json                 # retrieval progress (schemaVersion, fingerprint, status, cursor)
+  manifest.json                 # retrieval progress (schemaVersion, fingerprint, status; no cursor)
   manifest.lock                 # exclusive lock held by a retrieve
   runs/<runId>/run.json         # one raw build run per id
   timing-report.xlsx            # report output (default location)

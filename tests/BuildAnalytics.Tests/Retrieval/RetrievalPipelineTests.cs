@@ -25,21 +25,20 @@ public sealed class RetrievalPipelineTests
         Assert.Empty(result.FailedRunIds);
         Assert.Equal(
             [
-                "manifest:inprogress:<null>",
+                "manifest:inprogress",
                 "progress:started:-",
                 "list:<start>",
                 "progress:page:1:1",
                 "run:1",
-                "manifest:completed:<null>",
+                "manifest:completed",
                 "progress:completed:1:1"
             ],
             log.Events);
         Assert.Equal(ManifestStatus.InProgress, manifests.Commits[0].Status);
-        Assert.Null(manifests.Commits[0].Cursor);
     }
 
     [Fact]
-    public async Task Multi_page_forwards_the_cursor_and_checkpoints_each_page()
+    public async Task Multi_page_forwards_the_continuation_token_and_checkpoints_each_page()
     {
         var (pipeline, source, _, manifests, _, _, _) = Create();
         source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "t1"));
@@ -54,37 +53,36 @@ public sealed class RetrievalPipelineTests
         Assert.Equal(
             [ManifestStatus.InProgress, ManifestStatus.InProgress, ManifestStatus.Completed],
             manifests.Commits.Select(commit => commit.Status));
-        Assert.Equal("t1", manifests.Commits[1].Cursor);
     }
 
     [Fact]
-    public async Task Resume_starts_from_the_manifest_cursor()
+    public async Task Resume_starts_from_the_beginning()
     {
         var (pipeline, source, _, manifests, clock, _, _) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: "t1", clock, Fingerprint());
-        source.Page("t1", new BuildPage([], null));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, Fingerprint());
+        source.Page(null, new BuildPage([], null));
 
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
 
         Assert.Equal(ManifestStatus.Completed, result.Status);
-        Assert.Equal(["t1"], source.ListCalls.Select(call => call.Token));
+        Assert.Equal([null], source.ListCalls.Select(call => call.Token));
     }
 
     [Fact]
-    public async Task Replay_after_crash_before_commit_upserts_without_duplicates()
+    public async Task Resume_after_crash_before_commit_re_lists_skips_the_stored_run_and_completes()
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
-        runs.Put(TestRuns.Create(id: 1, definitionId: null, source: RunSource.List));
+        // The crash left run 1 durable while the manifest stayed in_progress with no cursor.
+        runs.Put(DetailCompleteRun(1, clock));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
-        source.Detail(1, DetailCompleteRun(1, clock));
 
         var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
 
         Assert.Equal(ManifestStatus.Completed, result.Status);
-        Assert.Equal(1, result.RunsWritten);
-        Assert.Single(runs.Writes);
-        Assert.Equal([1], await runs.ListRunIdsAsync(CancellationToken.None));
+        Assert.Equal([null], source.ListCalls.Select(call => call.Token));
+        Assert.Empty(source.DetailCalls);
+        Assert.Empty(runs.Writes);
     }
 
     // ---- rebuild / replay skip (ADR-7/R11) ----
@@ -94,7 +92,7 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Put(DetailCompleteRun(1, clock));
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
 
         var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
@@ -109,7 +107,7 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Put(TestRuns.Create(id: 1, definitionId: null, source: RunSource.List));
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
         source.Detail(1, DetailCompleteRun(1, clock));
 
@@ -126,7 +124,7 @@ public sealed class RetrievalPipelineTests
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Seed(1);
         runs.Unreadable.Add(1);
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
         source.Detail(1, DetailCompleteRun(1, clock));
 
@@ -143,7 +141,7 @@ public sealed class RetrievalPipelineTests
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Seed(1);
         runs.StaleSchema.Add(1);
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
         source.Detail(1, DetailCompleteRun(1, clock));
 
@@ -160,7 +158,7 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Put(DetailCompleteRun(1, clock));
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
 
         // The list row is contract-complete; without the rebuild skip this would overwrite
         // the detail-sourced file with a thin list row.
@@ -203,16 +201,21 @@ public sealed class RetrievalPipelineTests
     [Theory]
     [InlineData(ManifestStatus.Paused)]
     [InlineData(ManifestStatus.Failed)]
-    public async Task Resume_from_paused_or_failed_uses_the_stored_cursor(ManifestStatus status)
+    public async Task Resume_from_paused_or_failed_re_lists_from_null_and_skips_stored_runs(ManifestStatus status)
     {
-        var (pipeline, source, _, manifests, clock, _, _) = Create();
-        manifests.Current = ManifestWith(status, cursor: "t1", clock, fingerprint: Fingerprint());
-        source.Page("t1", new BuildPage([], null));
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Seed(1);
+        manifests.Current = ManifestWith(status, clock, Fingerprint());
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1), TestRuns.Create(id: 2)], null));
 
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
 
         Assert.Equal(ManifestStatus.Completed, result.Status);
-        Assert.Equal(["t1"], source.ListCalls.Select(call => call.Token));
+
+        // No cursor is restored: the pass starts from null and relies on the on-disk skip.
+        Assert.Equal([null], source.ListCalls.Select(call => call.Token));
+        Assert.Empty(source.DetailCalls);
+        Assert.Equal([2], runs.Writes.Select(run => run.Id));
     }
 
     [Fact]
@@ -236,7 +239,7 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Seed(1, 2);
-        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint());
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, Fingerprint());
         source.Page(null, new BuildPage([TestRuns.Create(id: 1), TestRuns.Create(id: 2)], null, TotalCount: 2));
 
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
@@ -247,7 +250,7 @@ public sealed class RetrievalPipelineTests
         Assert.Equal(0, result.RunsWritten);
         Assert.Empty(result.FailedRunIds);
 
-        // The refresh re-lists from the top, not the stored cursor, and stops after one call.
+        // The refresh re-lists from the top and stops after one call.
         Assert.Equal([null], source.ListCalls.Select(call => call.Token));
         Assert.Equal([ManifestStatus.InProgress, ManifestStatus.Completed], manifests.Commits.Select(commit => commit.Status));
     }
@@ -259,7 +262,7 @@ public sealed class RetrievalPipelineTests
         // when the newest page is fully stored (reviewer repro).
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Seed(1);
-        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(), failedRunIds: [7]);
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, Fingerprint(), failedRunIds: [7]);
         source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "next", TotalCount: 2));
         source.Page("next", new BuildPage([TestRuns.Create(id: 7)], null, TotalCount: 2));
 
@@ -278,7 +281,7 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Seed(1);
-        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(), failedRunIds: [7]);
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, Fingerprint(), failedRunIds: [7]);
         source.Page(null, new BuildPage([TestRuns.Create(id: 1)], null, TotalCount: 1));
 
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
@@ -295,7 +298,7 @@ public sealed class RetrievalPipelineTests
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Put(TestRuns.Create(id: 1, definitionId: null, source: RunSource.List));
         runs.Put(TestRuns.Create(id: 2, definitionId: null, source: RunSource.List));
-        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null), TestRuns.Create(id: 2, definitionId: null)], "t1", TotalCount: 3));
         source.Page("t1", new BuildPage([TestRuns.Create(id: 3, definitionId: null)], null, TotalCount: 3));
         source.Detail(1, DetailCompleteRun(1, clock));
@@ -318,7 +321,7 @@ public sealed class RetrievalPipelineTests
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Put(TestRuns.Create(id: 1, definitionId: null, source: RunSource.List));
         runs.Put(TestRuns.Create(id: 2, definitionId: null, source: RunSource.List));
-        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null), TestRuns.Create(id: 2, definitionId: null)], "t1", TotalCount: 2));
         source.Page("t1", new BuildPage([], null, TotalCount: 2));
         source.Detail(1, DetailCompleteRun(1, clock));
@@ -338,7 +341,7 @@ public sealed class RetrievalPipelineTests
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Put(DetailCompleteRun(1, clock));
         runs.Put(DetailCompleteRun(8, clock));
-        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(DetailPolicy.FillMissing), failedRunIds: [7]);
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing), failedRunIds: [7]);
         source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "t1", TotalCount: 3));
         source.Page("t1", new BuildPage([TestRuns.Create(id: 7, definitionId: null)], "t2", TotalCount: 3));
         source.Page("t2", new BuildPage([TestRuns.Create(id: 8)], null, TotalCount: 3));
@@ -365,7 +368,6 @@ public sealed class RetrievalPipelineTests
             Manifest.CurrentSchemaVersion,
             Fingerprint(),
             ManifestStatus.Completed,
-            "c1",
             created,
             clock.GetUtcNow(),
             null,
@@ -385,7 +387,7 @@ public sealed class RetrievalPipelineTests
     public async Task Completed_manifest_refresh_retries_previously_failed_runs()
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: Fingerprint(DetailPolicy.FillMissing), failedRunIds: [7]);
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing), failedRunIds: [7]);
         source.Page(null, new BuildPage([TestRuns.Create(id: 7, definitionId: null)], null, TotalCount: 1));
         source.Detail(7, DetailCompleteRun(7, clock));
 
@@ -402,7 +404,7 @@ public sealed class RetrievalPipelineTests
     public async Task Completed_manifest_with_a_different_fingerprint_is_a_typed_error_even_when_empty()
     {
         var (pipeline, source, _, manifests, clock, _, _) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.Completed, cursor: "c1", clock, fingerprint: "other");
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, fingerprint: "other");
 
         await Assert.ThrowsAsync<FingerprintMismatchException>(() => pipeline.RunAsync(Query(), CancellationToken.None));
         Assert.Empty(source.ListCalls);
@@ -413,7 +415,7 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Seed(99);
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: "other");
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: "other");
 
         await Assert.ThrowsAsync<FingerprintMismatchException>(
             () => pipeline.RunAsync(Query(), CancellationToken.None));
@@ -470,7 +472,7 @@ public sealed class RetrievalPipelineTests
     // ---- failure transitions ----
 
     [Fact]
-    public async Task Run_write_failure_fails_and_never_advances_the_cursor()
+    public async Task Run_write_failure_fails_the_run()
     {
         var (pipeline, source, runs, manifests, _, _, _) = Create();
         source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "t1"));
@@ -479,9 +481,7 @@ public sealed class RetrievalPipelineTests
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
 
         Assert.Equal(ManifestStatus.Failed, result.Status);
-        Assert.Null(result.Cursor);
         Assert.Equal(ManifestStatus.Failed, manifests.Commits[^1].Status);
-        Assert.Null(manifests.Commits[^1].Cursor);
         Assert.Empty(runs.Writes);
     }
 
@@ -507,7 +507,6 @@ public sealed class RetrievalPipelineTests
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
 
         Assert.Equal(ManifestStatus.Paused, result.Status);
-        Assert.Null(result.Cursor);
         Assert.Equal(PauseReason.RunCapReached, result.Pause);
         Assert.Equal(0, result.RemainingBudget);
         Assert.Null(result.RetryAfter);
@@ -585,9 +584,7 @@ public sealed class RetrievalPipelineTests
         var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
 
         Assert.Equal(ManifestStatus.Failed, result.Status);
-        Assert.Null(result.Cursor);
         Assert.Equal(ManifestStatus.Failed, manifests.Commits[^1].Status);
-        Assert.Null(manifests.Commits[^1].Cursor);
         Assert.Empty(runs.Writes);
     }
 
@@ -609,7 +606,6 @@ public sealed class RetrievalPipelineTests
 
         Assert.Single(manifests.Commits);
         Assert.Equal(ManifestStatus.InProgress, manifests.Commits[0].Status);
-        Assert.Null(manifests.Commits[0].Cursor);
     }
 
     // ---- ADR-84..93 correctness ----
@@ -676,7 +672,7 @@ public sealed class RetrievalPipelineTests
     }
 
     [Fact]
-    public async Task Checkpoint_commit_carries_failed_run_ids_with_the_cursor()
+    public async Task Checkpoint_commit_carries_the_failed_run_ids()
     {
         var (pipeline, source, _, manifests, _, _, _) = Create();
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null), TestRuns.Create(id: 2, status: "inProgress")], "t1"));
@@ -685,7 +681,7 @@ public sealed class RetrievalPipelineTests
 
         await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
 
-        var checkpoint = manifests.Commits.Single(commit => commit.Cursor == "t1");
+        var checkpoint = manifests.Commits.Single(commit => commit.Status == ManifestStatus.InProgress && commit.FailedRunIds.Count > 0);
         Assert.Equal([1], checkpoint.FailedRunIds);
     }
 
@@ -716,8 +712,8 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, progress) = Create();
         runs.Seed(Enumerable.Range(1, 80).ToArray());
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: "t1", clock, fingerprint: Fingerprint());
-        source.Page("t1", new BuildPage(Enumerable.Range(81, 15).Select(id => TestRuns.Create(id: id)).ToArray(), null, TotalCount: 95));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, Fingerprint());
+        source.Page(null, new BuildPage(Enumerable.Range(81, 15).Select(id => TestRuns.Create(id: id)).ToArray(), null, TotalCount: 95));
 
         await pipeline.RunAsync(Query(), CancellationToken.None);
 
@@ -743,7 +739,7 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, progress) = Create();
         runs.Put(TestRuns.Create(id: 1, definitionId: null, source: RunSource.List));
-        manifests.Current = ManifestWith(ManifestStatus.InProgress, cursor: null, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null, TotalCount: 3));
         source.Detail(1, DetailCompleteRun(1, clock));
 
@@ -788,7 +784,6 @@ public sealed class RetrievalPipelineTests
 
     private static Manifest ManifestWith(
         ManifestStatus status,
-        string? cursor,
         TimeProvider clock,
         string fingerprint = "unused",
         IReadOnlyList<int>? failedRunIds = null)
@@ -796,7 +791,6 @@ public sealed class RetrievalPipelineTests
             Manifest.CurrentSchemaVersion,
             fingerprint,
             status,
-            cursor,
             clock.GetUtcNow(),
             clock.GetUtcNow(),
             null,

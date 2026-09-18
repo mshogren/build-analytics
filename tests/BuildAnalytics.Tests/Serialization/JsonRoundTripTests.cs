@@ -210,7 +210,6 @@ public sealed class JsonRoundTripTests
             Manifest.CurrentSchemaVersion,
             "fingerprint",
             ManifestStatus.Paused,
-            "cursor-1",
             new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero),
             new DateTimeOffset(2024, 1, 2, 0, 0, 0, TimeSpan.Zero),
             "boom",
@@ -222,7 +221,6 @@ public sealed class JsonRoundTripTests
         Assert.Equal(manifest.SchemaVersion, back!.SchemaVersion);
         Assert.Equal(manifest.Fingerprint, back.Fingerprint);
         Assert.Equal(manifest.Status, back.Status);
-        Assert.Equal(manifest.Cursor, back.Cursor);
         Assert.Equal(manifest.CreatedAt, back.CreatedAt);
         Assert.Equal(manifest.UpdatedAt, back.UpdatedAt);
         Assert.Equal(manifest.LastError, back.LastError);
@@ -238,7 +236,6 @@ public sealed class JsonRoundTripTests
             Manifest.CurrentSchemaVersion,
             "fp",
             ManifestStatus.InProgress,
-            null,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,
@@ -247,7 +244,6 @@ public sealed class JsonRoundTripTests
             Manifest.CurrentSchemaVersion,
             "fp",
             ManifestStatus.InProgress,
-            null,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,
@@ -293,7 +289,7 @@ public sealed class JsonRoundTripTests
     {
         var expected = new[]
         {
-            "createdAt", "cursor", "failedRunIds",
+            "createdAt", "failedRunIds",
             "fingerprint", "lastError", "schemaVersion", "status", "updatedAt"
         };
 
@@ -305,7 +301,6 @@ public sealed class JsonRoundTripTests
             Manifest.CurrentSchemaVersion,
             "f",
             status,
-            null,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             null,

@@ -111,7 +111,7 @@ internal sealed class RecordingManifestStore(EventLog? log = null) : IManifestSt
 
         Current = manifest;
         Commits.Add(manifest);
-        log?.Add($"manifest:{manifest.Status.ToString().ToLowerInvariant()}:{manifest.Cursor ?? "<null>"}");
+        log?.Add($"manifest:{manifest.Status.ToString().ToLowerInvariant()}");
         return Task.CompletedTask;
     }
 }
