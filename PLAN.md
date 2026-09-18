@@ -521,6 +521,19 @@ truncate.
     re-pinned. `IDefinitionResolver`, the definitions endpoint call, and
     `AdoWildcard` are deleted. This supersedes the CLI-surface parts of ADR-79 and
     ADR-37/41/60.
+100. **Refresh retries outstanding failures.** A refresh keeps the manifest's
+    `FailedRunIds` as a `pendingFailed` set; a re-attempted id leaves the set, and
+    the early stop additionally requires the set to be empty (a failed run is not
+    "already stored", so the early-stop rationale does not apply while failures
+    are outstanding). Ids never re-listed are preserved, never dropped. Cost: list
+    pagination runs further while failures exist — list calls only, no detail
+    overfetch.
+101. **Config values are validated like CLI values.** A negative `maxRuns` in the
+    config file is a usage error (exit 2), matching `--max-runs -1`.
+102. **Progress counts only new ids.** `handled` counts ids not already in the
+    on-disk baseline, so repairing an incomplete file does not inflate the
+    percentage; the reported percent is clamped to 100.
+103. **`Manifest` drops `DefinitionIds`/`DefinitionNames`**, dead after ADR-99.
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
