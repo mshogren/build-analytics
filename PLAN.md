@@ -69,21 +69,34 @@ Each slice: failing test → minimal implementation → refactor → full suite 
 
 ## Test Matrix (high value)
 
-Retrieval: multi-page token forwarding; resume starts at persisted cursor;
-crash-before-commit replays without duplicates; repeated token does not loop;
-empty first page is idempotent.
+Grouped, with the raw-files-primary semantics applied. Source of truth: tester's
+re-mapped A/B/C/D matrix plus group E.
 
-Persistence: page commit atomic; rollback on mid-page failure; upsert updates
-mutable fields; durability across reopen; checkpoint scoped by fingerprint.
+**A — resumable retrieval.** Sequential multi-page token forwarding; resume from
+manifest cursor; crash-before-commit replay without duplicates; repeated token
+bounded; empty first page idempotent; **no per-run overfetch** (0 detail calls
+when list fields suffice); Ctrl+C cancellation mid-pipeline; one page in memory.
 
-Retry: capped exponential backoff; `Retry-After` respected; transient retried,
-permanent fails fast; exhaustion throws typed error; cancellation mid-backoff stops.
+**B — manifest + raw files.** Atomic `run.json` write (temp + rename);
+checkpoint advanced only after durable file write; checkpoint never ahead of
+files; file-level upsert by run id; durability across reopen; fingerprint
+scoping; manifest status machine; no credentials in artifacts.
 
-Summaries: durations from timestamps; missing/skewed timestamps → null, not zero;
-averages ignore nulls; monthly grouping by UTC queue month with an unknown bucket.
+**C — retry/backoff.** Capped exponential schedule; jitter deterministic with
+seed; `Retry-After` honored; transient retried / permanent fails fast;
+exhaustion throws typed error; cancellation mid-backoff stops; retried detail
+fetch stays idempotent.
 
-Constraints: no real network; no `Task.Delay` in tests; no `DateTime.UtcNow` inside
-pure logic; no shared database file across tests.
+**D — timing (pure).** Durations from timestamps; missing/skewed → null;
+averages ignore nulls; UTC monthly grouping + unknown bucket; wait > 5 min
+strictly > 300; case-insensitive counts; purity guard (no ambient clock or IO).
+
+**E — reporting/security.** Reporting never touches the network; no absolute
+local paths in output; PAT never logged or written; `.gitignore` excludes
+`build-analytics.config.json`.
+
+Constraints: no real network; no `Task.Delay` in tests; no `DateTime.UtcNow`
+inside pure logic; no shared mutable output root across tests.
 
 ## Security
 
@@ -99,6 +112,9 @@ pure logic; no shared database file across tests.
 4. Summary scope: seconds only, or percentiles/cost too.
 5. Output beyond Excel: CSV/JSON aggregates? Workbook charts? None yet.
 6. Acceptable CLI breakage level.
+7. Corrupted/truncated `manifest.json`: treat as fresh, or rebuild completed
+   ids by scanning `runs/`? Raw-files-primary makes this important.
+8. Manifest `schemaVersion` policy: older accepted; newer must fail typed.
 
 ## Handoff
 
