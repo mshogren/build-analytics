@@ -36,7 +36,7 @@ Summarize Azure DevOps build timing data (with possible later visualizations) wh
 Three projects. Core is **pure**; App holds every adapter.
 
 ```
-BuildAnalytics.Core   # models, query/fingerprint, pure timing, PORT INTERFACES
+BuildAnalytics.Core   # models, pure timing, PORT INTERFACES
 BuildAnalytics.App    # CLI + composition root + ADO client + file stores + Excel writer
 BuildAnalytics.Tests  # xUnit
 ```
@@ -192,8 +192,9 @@ truncate.
 ## Retrieval Rules
 
 - Fetch build-list pages sequentially; one page in memory at a time.
-- Per-run detail only when the list item lacks a required contract field;
-  the active `detailPolicy` is part of the fingerprint.
+- Per-run detail only when the list item lacks a required contract field
+  (`--detail fill-missing`); the detail policy is a CLI option, not part of any
+  stored identity (ADR-110 removed the fingerprint).
 - Retry only `408, 429, 500, 502, 503, 504` plus connection/timeout exceptions.
   **5 attempts (4 retries), waits 1, 2, 4, 8s.** Parse `Retry-After` in both
   delta-seconds and HTTP-date form. A `Retry-After` over 60s aborts the run with a
@@ -667,6 +668,10 @@ All findings accepted and folded into the sections above.
 | F17 | Smaller gaps | `runs.json` dropped; token restart; GUID quarantine; list retry |
 
 ## Test Matrix (high value)
+
+> **Superseded in part by ADR-110/111.** Rows mentioning a resume cursor, the
+> manifest, checkpoint commits, compaction or the lock describe the previous
+> design; the current behaviour is clear-first, single-command retrieval.
 
 **A — resumable retrieval.** Sequential multi-page token forwarding; resume
 re-lists from the beginning and skips what is on disk; crash-before-commit replay
