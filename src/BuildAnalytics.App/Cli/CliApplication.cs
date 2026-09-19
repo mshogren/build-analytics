@@ -100,7 +100,7 @@ public sealed class CliApplication
                 options.ApiVersion);
 
             var pipeline = new RetrievalPipeline(source, runStore, progress);
-            await pipeline.RunAsync(query, cancellationToken).ConfigureAwait(false);
+            var retrieval = await pipeline.RunAsync(query, cancellationToken).ConfigureAwait(false);
 
             progress.GeneratingReport();
             var writer = new ExcelTimingReportWriter(options.OutputPath);
@@ -110,7 +110,7 @@ public sealed class CliApplication
             _console.WriteLine(options.OutputPath);
             if (!options.Quiet)
             {
-                _console.WriteError($"Report complete: {report.RunsRead} run(s) read, {report.CorruptSkipped} corrupt skipped.");
+                _console.WriteError($"Report complete: {report.RunsRead} run(s) read, {report.CorruptSkipped} corrupt skipped, {retrieval.FailedRunIds.Count} skipped (detail unavailable).");
             }
 
             return 0;

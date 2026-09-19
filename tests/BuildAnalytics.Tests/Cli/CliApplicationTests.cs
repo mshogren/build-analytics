@@ -40,12 +40,18 @@ public sealed class CliApplicationTests
         Assert.True(File.Exists(outputPath));
         Assert.Contains(outputPath, console.Stdout);
         Assert.Contains("Generating report...", console.Stderr);
+        Assert.Contains("0 skipped (detail unavailable)", string.Join("\n", console.Stderr), StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Run_without_pat_fails_before_touching_the_transport()
+    public async Task Run_without_pat_fails_before_touching_the_transport_or_clearing_files()
     {
         using var root = new TempOutputRoot();
+        var logPath = Path.Combine(root.Path, "runs.jsonl");
+        var reportPath = Path.Combine(root.Path, "timing-report.xlsx");
+        File.WriteAllText(logPath, "{\"schemaVersion\":1,\"id\":99}\n");
+        File.WriteAllText(reportPath, "previous");
+
         var factory = new CountingHandlerFactory(() => new ScriptedHttpMessageHandler());
         var app = new CliApplication(new FakeCredentialProvider(null), new CapturingConsole(), factory);
 
@@ -55,6 +61,10 @@ public sealed class CliApplicationTests
 
         Assert.Equal(1, code);
         Assert.Equal(0, factory.Created);
+
+        // The PAT check precedes the clear, so nothing on disk is touched.
+        Assert.True(File.Exists(logPath));
+        Assert.True(File.Exists(reportPath));
     }
 
     [Fact]

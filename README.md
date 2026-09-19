@@ -57,7 +57,9 @@ workbook.
 
 **Progress:** progress goes to stderr — one line per page once that page's
 runs are durable (`Retrieving page 3 - 1,000 builds`) and a final
-`Generating report...`. `--quiet` suppresses it.
+`Generating report...`. The completion line reports runs read, malformed log
+lines skipped, and listed builds skipped because their detail fetch returned 404
+(`skipped (detail unavailable)`). `--quiet` suppresses it.
 
 ## Report
 

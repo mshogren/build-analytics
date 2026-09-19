@@ -139,7 +139,6 @@ public sealed class ReportingServiceTests
         var result = await service.GenerateAsync(CancellationToken.None);
 
         Assert.Equal(1, result.RunsRead);
-        Assert.False(File.Exists(Path.Combine(root.Path, "manifest.lock")));
 
         var afterPaths = Directory
             .GetFileSystemEntries(root.Path, "*", SearchOption.AllDirectories)

@@ -42,6 +42,23 @@ public sealed class RetrievalPipelineTests
     }
 
     [Fact]
+    public async Task Lists_a_three_page_continuation_chain()
+    {
+        var (pipeline, source, runs, _, _) = Create();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "t1"));
+        source.Page("t1", new BuildPage([TestRuns.Create(id: 2)], "t2"));
+        source.Page("t2", new BuildPage([TestRuns.Create(id: 3)], null));
+
+        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(3, result.PagesFetched);
+        Assert.Equal(3, result.RunsWritten);
+        Assert.Equal(3, source.ListCalls.Count);
+        Assert.Equal([null, "t1", "t2"], source.ListCalls.Select(call => call.Token));
+        Assert.Equal([1, 2, 3], runs.Writes.Select(run => run.Id));
+    }
+
+    [Fact]
     public async Task Duplicate_ids_within_a_pass_are_appended_once()
     {
         var (pipeline, source, runs, _, _) = Create();
