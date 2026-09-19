@@ -1,8 +1,12 @@
+using System.Text.Json;
 using BuildAnalytics.App.Retrieval;
+using BuildAnalytics.App.Storage;
+using BuildAnalytics.Core;
 using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Query;
 using BuildAnalytics.Tests.AzureDevOps;
+using BuildAnalytics.Tests.Storage;
 
 namespace BuildAnalytics.Tests.Retrieval;
 
@@ -54,6 +58,24 @@ public sealed class RetrievalPipelineTests
         Assert.Equal(
             [ManifestStatus.InProgress, ManifestStatus.InProgress, ManifestStatus.Completed],
             manifests.Commits.Select(commit => commit.Status));
+    }
+
+    [Fact]
+    public async Task Per_page_append_precedes_the_in_progress_checkpoint()
+    {
+        var (pipeline, source, _, _, _, log, _) = Create();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "t1"));
+        source.Page("t1", new BuildPage([TestRuns.Create(id: 2)], null));
+
+        await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        var firstAppend = log.Events.IndexOf("run:1");
+        var secondInProgress = log.Events.IndexOf("manifest:inprogress", 1);
+        var secondAppend = log.Events.IndexOf("run:2");
+
+        Assert.True(firstAppend >= 0, $"missing run:1 in {string.Join(", ", log.Events)}");
+        Assert.True(secondInProgress > firstAppend, $"page-1 append must precede the next checkpoint: {string.Join(", ", log.Events)}");
+        Assert.True(secondAppend > secondInProgress, $"page-2 append must follow its checkpoint: {string.Join(", ", log.Events)}");
     }
 
     [Fact]
@@ -703,6 +725,89 @@ public sealed class RetrievalPipelineTests
 
         var checkpoint = manifests.Commits.Single(commit => commit.Status == ManifestStatus.InProgress && commit.FailedRunIds.Count > 0);
         Assert.Equal([1], checkpoint.FailedRunIds);
+    }
+
+    [Fact]
+    public async Task Completion_skips_compaction_when_a_bad_line_was_not_repaired()
+    {
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Put(DetailCompleteRun(1, clock));
+        runs.Unsupported.Add(2);
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+
+        // ADR-109/F1: the unrepaired bad line must survive - compaction was skipped.
+        Assert.Empty(runs.Replacements);
+        Assert.Contains(2, runs.Unsupported);
+    }
+
+    [Fact]
+    public async Task Completion_skips_compaction_when_a_malformed_line_is_present()
+    {
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Put(DetailCompleteRun(1, clock));
+        runs.Malformed.Add(2);
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+        Assert.Empty(runs.Replacements);
+        Assert.Contains(2, runs.Malformed);
+    }
+
+    [Fact]
+    public async Task Completion_does_not_erase_an_unrepaired_bad_line_from_the_real_log()
+    {
+        using var root = new TempOutputRoot();
+        var logPath = Path.Combine(root.Path, "runs.jsonl");
+        var bad = JsonSerializer.Serialize(TestRuns.Create(id: 2) with { SchemaVersion = 99 }, BuildAnalyticsJson.Options);
+        var good = JsonSerializer.Serialize(TestRuns.Create(id: 1), BuildAnalyticsJson.Options);
+        await File.WriteAllTextAsync(logPath, bad + "\n" + good + "\n", CancellationToken.None);
+
+        var clock = new FakeTimeProvider { UtcNow = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero) };
+        var manifests = new RecordingManifestStore { Current = ManifestWith(ManifestStatus.Completed, clock, Fingerprint()) };
+        var source = new FakeBuildSource();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], null));
+        var pipeline = new RetrievalPipeline(
+            source,
+            new FileRunStore(root.Path, new PhysicalFileOperations()),
+            manifests,
+            clock);
+
+        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+
+        // The bad line (run 2, never re-listed) is preserved; reporting will still abort/flag it.
+        var read = await new FileRunStore(root.Path, new PhysicalFileOperations()).ReadAllAsync(CancellationToken.None);
+        Assert.Equal(1, read.UnsupportedSchemaLineCount);
+        Assert.Contains(bad, await File.ReadAllTextAsync(logPath, CancellationToken.None), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Completion_compacts_on_a_later_pass_once_the_bad_line_is_superseded()
+    {
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Put(DetailCompleteRun(1, clock));
+        runs.Unsupported.Add(2);
+        manifests.Current = ManifestWith(ManifestStatus.Completed, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
+
+        await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+        Assert.Empty(runs.Replacements);
+
+        // The next pass repaired run 2; its valid line now supersedes the bad one.
+        runs.Put(DetailCompleteRun(2, clock));
+        runs.Unsupported.Remove(2);
+        await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.NotEmpty(runs.Replacements);
     }
 
     // ---- progress (ADR-96) ----

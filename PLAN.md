@@ -53,12 +53,14 @@ public interface IManifestStore {
     Task CommitAsync(Manifest manifest, CancellationToken ct);
 }
 public interface IRunStore {
-    Task WriteAsync(BuildRun run, CancellationToken ct);
-    Task<BuildRun?> TryReadAsync(int runId, CancellationToken ct);
-    Task<IReadOnlyList<int>> ListRunIdsAsync(CancellationToken ct);
+    Task<RunReadResult> ReadAllAsync(CancellationToken ct);
+    Task AppendAsync(IReadOnlyList<BuildRun> runs, CancellationToken ct);
+    Task ReplaceAllAsync(IReadOnlyList<BuildRun> runs, CancellationToken ct);
 }
+public sealed record RunReadResult(
+    IReadOnlyList<BuildRun> Runs, int MalformedLineCount, int UnsupportedSchemaLineCount);
 public interface ITimingReportWriter {
-    Task WriteAsync(TimingSummary summary, CancellationToken ct); // adapter owns its destination
+    Task WriteAsync(TimingReport report, CancellationToken ct); // adapter owns its destination
 }
 public interface IDelayScheduler {
     Task DelayAsync(TimeSpan delay, CancellationToken ct);
@@ -67,7 +69,8 @@ public interface IDelayScheduler {
 
 `IBuildSource` is **page-oriented**, not `IAsyncEnumerable`: each page is fetched,
 written, and committed as a bounded unit, so page boundaries stay visible.
-`IRunStore.ListRunIdsAsync` supports the corrupt-manifest rebuild (Q7).
+`IRunStore.ReadAllAsync` feeds the corrupt-manifest rebuild (read the single log,
+skip what it already contains).
 
 Canonical types (ratified after the implementer's design landed):
 
@@ -259,12 +262,16 @@ truncate.
     tests pin this, and a golden exact-shape assertion guards field drift.
 24. **Typed storage errors live in Core** (`BuildAnalytics.Core.Errors`):
     `OutputRootInUseException`, `UnsupportedSchemaVersionException`,
-    `FingerprintMismatchException`, `CorruptRunFileException`. A valid artifact with
-    an unexpected `schemaVersion` (older or newer) throws
-    `UnsupportedSchemaVersionException` — not corruption, never quarantined.
-25. **Corrupt run files throw.** `IRunStore.TryReadAsync` returns null only when
-    the file is absent; an unparseable run file throws `CorruptRunFileException`.
-    Only the manifest is quarantined.
+    `FingerprintMismatchException`. A valid artifact with an unexpected
+    `schemaVersion` (older or newer) throws `UnsupportedSchemaVersionException` —
+    not corruption, never quarantined. *(Partly superseded by ADR-109: the removed
+    `CorruptRunFileException` is replaced by the `MalformedLineCount` /
+    `UnsupportedSchemaLineCount` counts on `RunReadResult`.)*
+25. **Corrupt runs do not throw from the store (superseded by ADR-109).** The
+    original rule was that an unparseable `runs/<id>/run.json` throws
+    `CorruptRunFileException`. Under ADR-109 the single log never throws on a bad
+    line: malformed lines are counted and skipped, unsupported versions are counted
+    and excluded, and only the manifest is quarantined.
 26. **Fault seam.** The file adapters depend on `IFileOperations`
     (`WriteTempAsync` / `FlushToDiskAsync` / `RenameAsync` / `AppendAsync`);
     tests inject a decorator that throws or blocks at a chosen stage. Supersedes
@@ -606,10 +613,10 @@ truncate.
     to stderr; `--quiet` suppresses non-error progress. No `--verbose` in v1.
 
 Accepted limitations (documented, no action): stale `.tmp` files are ignored by
-`ListRunIdsAsync` and are not garbage-collected at startup; `Manifest` list
+the run-log reader and are not garbage-collected at startup; `Manifest` list
 equality is order-sensitive, which is safe while construction stays canonical;
 when a non-conforming response carries **both** `Retry-After` forms the executor
-takes header order rather than strictly preferring delta-seconds; `FileRunStore.TryReadAsync`
+takes header order rather than strictly preferring delta-seconds; `FileRunStore.ReadAllAsync`
 does not wrap a raw read `IOException` in `StorageException` (upstream layers
 handle it); detail `424` is covered by the generic non-404 abort path with no
 separately named row; the report/transport DTOs (`BuildPage.Runs`, `TimingReport.Runs`) hold the

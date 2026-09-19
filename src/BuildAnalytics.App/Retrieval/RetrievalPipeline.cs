@@ -125,8 +125,14 @@ public sealed class RetrievalPipeline(
 
         async Task<RetrievalResult> CompleteAsync()
         {
-            // ADR-109: compact superseded duplicates; data must be durable before the manifest commit.
-            await runs.ReplaceAllAsync(index.Values.OrderBy(run => run.Id).ToArray(), cancellationToken).ConfigureAwait(false);
+            // ADR-109/F1: only compact a fully clean log. Readers dedupe, so leaving duplicates
+            // is safe, but dropping a malformed/unsupported line would erase evidence and let
+            // reporting silently omit a run. A re-fetched unsupported line stops counting on the
+            // next read (id-aware), so compaction can run again on a later pass.
+            if (runRead.MalformedLineCount == 0 && runRead.UnsupportedSchemaLineCount == 0)
+            {
+                await runs.ReplaceAllAsync(index.Values.OrderBy(run => run.Id).ToArray(), cancellationToken).ConfigureAwait(false);
+            }
 
             // ADR-67: exhausted or early-stopped with failures is still completed.
             await CommitAsync(ManifestStatus.Completed, lastError: null).ConfigureAwait(false);
