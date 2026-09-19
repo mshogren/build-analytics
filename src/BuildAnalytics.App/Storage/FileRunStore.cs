@@ -7,42 +7,38 @@ using BuildAnalytics.Core.Ports;
 namespace BuildAnalytics.App.Storage;
 
 /// <summary>
-/// File-backed run store. Canonical layout (ADR-109): one append-only
+/// File-backed run store. Canonical layout (ADR-109/110): one append-only
 /// <c>&lt;outputRoot&gt;/runs.jsonl</c> with one compact JSON object per line. Reads dedupe by
-/// id (last line wins); compaction rewrites atomically via <see cref="AtomicFileWriter"/>.
+/// id (last line wins) and skip malformed lines.
 /// </summary>
 public sealed class FileRunStore : IRunStore
 {
+    public const string LogFileName = "runs.jsonl";
+
     private readonly string _logPath;
     private readonly IFileOperations _fileOperations;
-    private readonly AtomicFileWriter _writer;
 
     public FileRunStore(string outputRoot, IFileOperations fileOperations)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputRoot);
 
-        _logPath = Path.Combine(Path.GetFullPath(outputRoot), "runs.jsonl");
+        _logPath = Path.Combine(Path.GetFullPath(outputRoot), LogFileName);
         _fileOperations = fileOperations;
-        _writer = new AtomicFileWriter(fileOperations);
     }
 
     public async Task<RunReadResult> ReadAllAsync(CancellationToken cancellationToken)
     {
         if (!File.Exists(_logPath))
         {
-            return new RunReadResult([], 0, 0);
+            return new RunReadResult([], 0);
         }
 
         var bytes = await StorageFileAccess.ReadAllBytesAsync(_logPath, cancellationToken).ConfigureAwait(false);
         var runs = new Dictionary<int, BuildRun>();
-        var lastValidLineById = new Dictionary<int, int>();
-        var unsupportedCandidates = new List<(int LineIndex, int? RunId)>();
         var malformed = 0;
-        var lineIndex = 0;
 
         foreach (var line in SplitLines(bytes))
         {
-            var index = lineIndex++;
             if (line.Length == 0)
             {
                 continue;
@@ -53,20 +49,15 @@ public sealed class FileRunStore : IRunStore
                 using var document = JsonDocument.Parse(line);
                 var root = document.RootElement;
 
+                // ADR-110: the log is only ever written by this build, so an unexpected or
+                // missing schemaVersion is treated like any other malformed line.
                 if (root.ValueKind != JsonValueKind.Object ||
                     !root.TryGetProperty("schemaVersion", out var schemaVersionElement) ||
                     schemaVersionElement.ValueKind != JsonValueKind.Number ||
-                    !schemaVersionElement.TryGetInt32(out var schemaVersion))
+                    !schemaVersionElement.TryGetInt32(out var schemaVersion) ||
+                    schemaVersion != BuildRun.CurrentSchemaVersion)
                 {
                     malformed++;
-                    continue;
-                }
-
-                if (schemaVersion != BuildRun.CurrentSchemaVersion)
-                {
-                    // F1: the id is decodable (valid JSON, wrong version), so a later valid
-                    // line for the same run can supersede this one and heal the count.
-                    unsupportedCandidates.Add((index, TryReadPositiveId(root)));
                     continue;
                 }
 
@@ -79,7 +70,6 @@ public sealed class FileRunStore : IRunStore
 
                 // ADR-109: a later line with the same id supersedes an earlier one.
                 runs[run.Id] = run;
-                lastValidLineById[run.Id] = index;
             }
             catch (JsonException)
             {
@@ -88,15 +78,8 @@ public sealed class FileRunStore : IRunStore
             }
         }
 
-        // F1: an unsupported line is counted only while no later valid line for the same run
-        // exists. That is what makes a re-fetched run self-healing and lets compaction run again.
-        var unsupported = unsupportedCandidates.Count(candidate =>
-            candidate.RunId is not { } id ||
-            !lastValidLineById.TryGetValue(id, out var validIndex) ||
-            validIndex < candidate.LineIndex);
-
         var ordered = runs.Values.OrderBy(run => run.Id).ToArray();
-        return new RunReadResult(ordered, malformed, unsupported);
+        return new RunReadResult(ordered, malformed);
     }
 
     public Task AppendAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
@@ -111,7 +94,7 @@ public sealed class FileRunStore : IRunStore
         var content = SerializeLines(runs);
         if (EndsWithoutNewline())
         {
-            // N1: a crash can leave an unterminated fragment; never glue the new record onto it.
+            // A crash can leave an unterminated fragment; never glue the new record onto it.
             var padded = new byte[content.Length + 1];
             padded[0] = (byte)'\n';
             content.Span.CopyTo(padded.AsSpan(1));
@@ -119,14 +102,6 @@ public sealed class FileRunStore : IRunStore
         }
 
         return _fileOperations.AppendAsync(_logPath, content, cancellationToken);
-    }
-
-    public Task ReplaceAllAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(runs);
-
-        var content = runs.Count == 0 ? ReadOnlyMemory<byte>.Empty : SerializeLines(runs);
-        return _writer.WriteAsync(_logPath, content, cancellationToken);
     }
 
     private static ReadOnlyMemory<byte> SerializeLines(IReadOnlyList<BuildRun> runs)
@@ -156,14 +131,6 @@ public sealed class FileRunStore : IRunStore
             yield return line.EndsWith('\r') ? line[..^1] : line;
         }
     }
-
-    private static int? TryReadPositiveId(JsonElement root)
-        => root.TryGetProperty("id", out var idElement)
-           && idElement.ValueKind == JsonValueKind.Number
-           && idElement.TryGetInt32(out var id)
-           && id > 0
-            ? id
-            : null;
 
     private bool EndsWithoutNewline()
     {

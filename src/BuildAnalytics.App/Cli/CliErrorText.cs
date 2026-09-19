@@ -15,15 +15,11 @@ public static class CliErrorText
 
         return exception switch
         {
-            FingerprintMismatchException
-                or UnsupportedSchemaVersionException
-                or ReportingErrorException
-                or ReportingWriteException
+            ReportingWriteException
                 or AdoRequestException
                 or RetryExhaustedException
                 or InvalidContinuationTokenException
                 or InvalidDetailPayloadException
-                or OutputRootInUseException
                 or PipelinePausedException => exception.Message,
             StorageException => "A storage failure occurred.",
             _ => $"Unexpected failure: {exception.GetType().Name}."

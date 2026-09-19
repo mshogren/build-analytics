@@ -6,7 +6,7 @@ using BuildAnalytics.Core.Query;
 
 namespace BuildAnalytics.Tests.Retrieval;
 
-/// <summary>Ordered event sink shared by the retrieval fakes to assert checkpoint ordering.</summary>
+/// <summary>Ordered event sink shared by the retrieval fakes to assert append ordering.</summary>
 internal sealed class EventLog
 {
     public List<string> Events { get; } = [];
@@ -91,48 +91,16 @@ internal sealed class FakeBuildSource(EventLog? log = null) : IBuildSource
     private static string Key(string? token) => token ?? StartKey;
 }
 
-internal sealed class RecordingManifestStore(EventLog? log = null) : IManifestStore
-{
-    public Manifest? Current { get; set; }
-
-    public List<Manifest> Commits { get; } = [];
-
-    public Func<Manifest, Exception?>? OnCommit { get; set; }
-
-    public Task<Manifest?> TryReadAsync(CancellationToken cancellationToken) => Task.FromResult(Current);
-
-    public Task CommitAsync(Manifest manifest, CancellationToken cancellationToken)
-    {
-        var failure = OnCommit?.Invoke(manifest);
-        if (failure is not null)
-        {
-            throw failure;
-        }
-
-        Current = manifest;
-        Commits.Add(manifest);
-        log?.Add($"manifest:{manifest.Status.ToString().ToLowerInvariant()}");
-        return Task.CompletedTask;
-    }
-}
-
 internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
 {
     private readonly Dictionary<int, BuildRun> _runs = [];
 
     public List<BuildRun> Writes { get; } = [];
 
-    public List<IReadOnlyList<BuildRun>> Replacements { get; } = [];
-
-    public int ReadAllCalls { get; private set; }
-
     public HashSet<int> FailOnWrite { get; } = [];
 
     /// <summary>Ids that exist as a malformed line: excluded from the read result and counted.</summary>
     public HashSet<int> Malformed { get; } = [];
-
-    /// <summary>Ids that exist as an unsupported-schema line: excluded from the read result and counted.</summary>
-    public HashSet<int> Unsupported { get; } = [];
 
     public Dictionary<int, Exception> WriteFailures { get; } = [];
 
@@ -150,12 +118,11 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
 
     public Task<RunReadResult> ReadAllAsync(CancellationToken cancellationToken)
     {
-        ReadAllCalls++;
         var runs = _runs.Values
-            .Where(run => !Malformed.Contains(run.Id) && !Unsupported.Contains(run.Id))
+            .Where(run => !Malformed.Contains(run.Id))
             .OrderBy(run => run.Id)
             .ToArray();
-        return Task.FromResult(new RunReadResult(runs, Malformed.Count, Unsupported.Count));
+        return Task.FromResult(new RunReadResult(runs, Malformed.Count));
     }
 
     public Task AppendAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
@@ -174,45 +141,28 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
 
             _runs[run.Id] = run;
             Malformed.Remove(run.Id);
-            Unsupported.Remove(run.Id);
             Writes.Add(run);
             log?.Add($"run:{run.Id}");
         }
 
         return Task.CompletedTask;
     }
-
-    public Task ReplaceAllAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
-    {
-        _runs.Clear();
-        foreach (var run in runs)
-        {
-            _runs[run.Id] = run;
-        }
-
-        Replacements.Add(runs.ToArray());
-        log?.Add($"replace:{runs.Count}");
-        return Task.CompletedTask;
-    }
 }
 
-/// <summary>Records the ordered progress events the pipeline emits (ADR-96) and mirrors them into the shared event log.</summary>
+/// <summary>Records the ordered progress events the pipeline emits (ADR-96/110).</summary>
 internal sealed class RecordingRetrievalProgress(EventLog? log = null) : IRetrievalProgress
 {
     public List<string> Events { get; } = [];
 
-    public void Started(int? total) => Record($"started:{total?.ToString() ?? "-"}");
+    public void Started() => Record("started");
 
     public void PageFetched(int pageNumber, int runsInPage) => Record($"page:{pageNumber}:{runsInPage}");
 
-    public void PercentComplete(int percent, int completed, int total) => Record($"percent:{percent}:{completed}/{total}");
-
     public void Restarting() => Record("restarting");
 
-    public void Paused(PauseReason reason, TimeSpan? retryAfter, int? remainingBudget)
-        => Record($"paused:{reason}");
+    public void Completed(int pages, int runs) => Record($"completed:{pages}:{runs}");
 
-    public void Completed(int pages, int runsWritten) => Record($"completed:{pages}:{runsWritten}");
+    public void GeneratingReport() => Record("generating-report");
 
     private void Record(string entry)
     {

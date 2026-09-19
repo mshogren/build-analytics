@@ -1,7 +1,6 @@
 using BuildAnalytics.App.Reporting;
 using BuildAnalytics.App.Storage;
 using BuildAnalytics.Core;
-using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Ports;
 using BuildAnalytics.Tests.Doubles;
@@ -17,35 +16,9 @@ public sealed class ReportingServiceTests
     private static readonly DateTimeOffset Queue = new(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public async Task Missing_manifest_throws_reporting_error()
+    public async Task Empty_root_writes_a_valid_zero_filled_report()
     {
-        var (service, _, _, _) = Create();
-
-        var exception = await Assert.ThrowsAsync<ReportingErrorException>(() => service.GenerateAsync(CancellationToken.None));
-
-        Assert.Null(exception.Status);
-    }
-
-    [Theory]
-    [InlineData(ManifestStatus.Pending)]
-    [InlineData(ManifestStatus.InProgress)]
-    [InlineData(ManifestStatus.Paused)]
-    [InlineData(ManifestStatus.Failed)]
-    public async Task Non_completed_manifest_throws_reporting_error(ManifestStatus status)
-    {
-        var (service, manifests, _, _) = Create();
-        manifests.Current = ManifestWith(status);
-
-        var exception = await Assert.ThrowsAsync<ReportingErrorException>(() => service.GenerateAsync(CancellationToken.None));
-
-        Assert.Equal(status, exception.Status);
-    }
-
-    [Fact]
-    public async Task Completed_empty_root_writes_a_valid_zero_filled_report()
-    {
-        var (service, manifests, runs, writer) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.Completed);
+        var (service, runs, writer) = Create();
 
         var result = await service.GenerateAsync(CancellationToken.None);
 
@@ -58,17 +31,11 @@ public sealed class ReportingServiceTests
     }
 
     [Fact]
-    public async Task Completed_zero_run_root_writes_a_valid_real_workbook()
+    public async Task Empty_root_writes_a_valid_real_workbook()
     {
         using var root = new TempOutputRoot();
-        await File.WriteAllBytesAsync(
-            Path.Combine(root.Path, "manifest.json"),
-            JsonSerializer.SerializeToUtf8Bytes(ManifestWith(ManifestStatus.Completed), BuildAnalyticsJson.Options));
-
         var outputPath = Path.Combine(root.Path, "report.xlsx");
-        using var manifestReader = FileManifestStore.OpenReadOnly(root.Path);
         var service = new ReportingService(
-            manifestReader,
             new FileRunStore(root.Path, new PhysicalFileOperations()),
             new ExcelTimingReportWriter(outputPath));
 
@@ -92,15 +59,13 @@ public sealed class ReportingServiceTests
         Assert.Equal("TotalDurationSeconds", runsSheet.Cell(1, 16).GetString());
         Assert.Equal("Month", runsSheet.Cell(1, 23).GetString());
         Assert.True(runsSheet.Cell(2, 1).IsEmpty());
-        // ClosedXML supports header-only ListObjects, so even a zero-run root gets a real table.
         Assert.Equal("RunsTable", runsSheet.Table("RunsTable").Name);
     }
 
     [Fact]
     public async Task Aggregates_present_runs_and_reports_counts()
     {
-        var (service, manifests, runs, writer) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.Completed);
+        var (service, runs, writer) = Create();
         runs.Put(Run(1, "succeeded"));
         runs.Put(Run(2, "succeeded"));
         runs.Put(Run(3, "failed"));
@@ -118,8 +83,7 @@ public sealed class ReportingServiceTests
     [Fact]
     public async Task Corrupt_run_is_skipped_and_counted_without_aborting()
     {
-        var (service, manifests, runs, _) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.Completed);
+        var (service, runs, _) = Create();
         runs.Put(Run(1, "succeeded"));
         runs.Seed(2);
         runs.Malformed.Add(2);
@@ -134,24 +98,27 @@ public sealed class ReportingServiceTests
     }
 
     [Fact]
-    public async Task Unsupported_schema_run_aborts_instead_of_skipping()
+    public async Task Malformed_line_in_the_real_log_is_skipped_and_counted()
     {
-        var (service, manifests, runs, _) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.Completed);
-        runs.Seed(1);
-        runs.Unsupported.Add(1);
+        using var root = new TempOutputRoot();
+        var logPath = Path.Combine(root.Path, "runs.jsonl");
+        var valid = JsonSerializer.Serialize(Run(1, "succeeded"), BuildAnalyticsJson.Options);
+        await File.WriteAllTextAsync(logPath, "{ not json\n" + valid + "\n", CancellationToken.None);
 
-        await Assert.ThrowsAsync<UnsupportedSchemaVersionException>(() => service.GenerateAsync(CancellationToken.None));
+        var service = new ReportingService(
+            new FileRunStore(root.Path, new PhysicalFileOperations()),
+            new InMemoryTimingReportWriter());
+
+        var result = await service.GenerateAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.RunsRead);
+        Assert.Equal(1, result.CorruptSkipped);
     }
 
     [Fact]
     public async Task GenerateAsync_does_not_mutate_the_output_root()
     {
         using var root = new TempOutputRoot();
-
-        await File.WriteAllBytesAsync(
-            Path.Combine(root.Path, "manifest.json"),
-            JsonSerializer.SerializeToUtf8Bytes(ManifestWith(ManifestStatus.Completed), BuildAnalyticsJson.Options));
 
         await File.WriteAllBytesAsync(
             Path.Combine(root.Path, "runs.jsonl"),
@@ -165,9 +132,7 @@ public sealed class ReportingServiceTests
             .Where(File.Exists)
             .ToDictionary(path => path, File.ReadAllBytes, StringComparer.Ordinal);
 
-        using var manifestReader = FileManifestStore.OpenReadOnly(root.Path);
         var service = new ReportingService(
-            manifestReader,
             new FileRunStore(root.Path, new PhysicalFileOperations()),
             new InMemoryTimingReportWriter());
 
@@ -175,7 +140,6 @@ public sealed class ReportingServiceTests
 
         Assert.Equal(1, result.RunsRead);
         Assert.False(File.Exists(Path.Combine(root.Path, "manifest.lock")));
-        Assert.Empty(Directory.GetFiles(root.Path, "manifest.corrupt-*.json"));
 
         var afterPaths = Directory
             .GetFileSystemEntries(root.Path, "*", SearchOption.AllDirectories)
@@ -211,21 +175,10 @@ public sealed class ReportingServiceTests
             startTime: Queue.AddMinutes(1),
             finishTime: Queue.AddMinutes(2));
 
-    private static Manifest ManifestWith(ManifestStatus status)
-        => new(
-            Manifest.CurrentSchemaVersion,
-            "fp",
-            status,
-            DateTimeOffset.UnixEpoch,
-            DateTimeOffset.UnixEpoch,
-            null,
-            []);
-
-    private static (ReportingService Service, RecordingManifestStore Manifests, RecordingRunStore Runs, InMemoryTimingReportWriter Writer) Create()
+    private static (ReportingService Service, RecordingRunStore Runs, InMemoryTimingReportWriter Writer) Create()
     {
-        var manifests = new RecordingManifestStore();
         var runs = new RecordingRunStore();
         var writer = new InMemoryTimingReportWriter();
-        return (new ReportingService(manifests, runs, writer), manifests, runs, writer);
+        return (new ReportingService(runs, writer), runs, writer);
     }
 }

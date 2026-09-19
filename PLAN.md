@@ -11,7 +11,7 @@ Clean-slate .NET rewrite. Existing repo is reference-only; it is not modified.
 Summarize Azure DevOps build timing data (with possible later visualizations) while:
 
 - retrieving only the data required
-- resuming retrieval safely after failure
+- ~~resuming retrieval safely after failure~~ (removed by ADR-110: clear-first, stateless)
 - keeping analysis simple and local
 - following SOLID and TDD
 
@@ -20,9 +20,16 @@ Summarize Azure DevOps build timing data (with possible later visualizations) wh
 - Clean-slate rewrite, not a refactor.
 - .NET 10, xUnit.
 - **Raw files are the source of truth.**
-- A small manifest tracks retrieval progress only.
+- ~~A small manifest tracks retrieval progress only.~~ (removed by ADR-110: clear-first, stateless)
 - Analysis/reporting performs no network access and reads local raw files.
 - Credentials come from `AZDO_PAT` only; never persisted, never a CLI flag.
+
+> **ADR-110/111 (current).** The manifest, lock, status machine, resume, early
+> stop, fingerprint binding, persisted `FailedRunIds`, on-disk skip and log
+> compaction are **removed**. Each invocation clears `runs.jsonl` + the report,
+> lists the full history, appends each page, then writes the workbook — in one
+> command. Any section below that still describes those mechanisms is historical;
+> see ADR-110 and ADR-111 for the current behaviour.
 
 ## Target Layout
 
@@ -48,17 +55,11 @@ public interface IBuildSource {
     Task<BuildPage> ListAsync(BuildQuery query, string? continuationToken, CancellationToken ct);
     Task<BuildRun> GetDetailAsync(BuildQuery query, int runId, CancellationToken ct); // opt-in
 }
-public interface IManifestStore {
-    Task<Manifest?> TryReadAsync(CancellationToken ct);
-    Task CommitAsync(Manifest manifest, CancellationToken ct);
-}
 public interface IRunStore {
     Task<RunReadResult> ReadAllAsync(CancellationToken ct);
     Task AppendAsync(IReadOnlyList<BuildRun> runs, CancellationToken ct);
-    Task ReplaceAllAsync(IReadOnlyList<BuildRun> runs, CancellationToken ct);
 }
-public sealed record RunReadResult(
-    IReadOnlyList<BuildRun> Runs, int MalformedLineCount, int UnsupportedSchemaLineCount);
+public sealed record RunReadResult(IReadOnlyList<BuildRun> Runs, int MalformedLineCount);
 public interface ITimingReportWriter {
     Task WriteAsync(TimingReport report, CancellationToken ct); // adapter owns its destination
 }
@@ -67,10 +68,9 @@ public interface IDelayScheduler {
 }
 ```
 
-`IBuildSource` is **page-oriented**, not `IAsyncEnumerable`: each page is fetched,
-written, and committed as a bounded unit, so page boundaries stay visible.
-`IRunStore.ReadAllAsync` feeds the corrupt-manifest rebuild (read the single log,
-skip what it already contains).
+`IBuildSource` is **page-oriented**, not `IAsyncEnumerable`: each page is fetched
+and appended as a bounded unit, so page boundaries stay visible.
+`IRunStore.ReadAllAsync` feeds reporting (read the single log, dedupe by id).
 
 Canonical types (ratified after the implementer's design landed):
 
@@ -78,7 +78,7 @@ Canonical types (ratified after the implementer's design landed):
 - `Timing.TimingCalculator.Calculate(BuildRun) -> RunTiming` — durations
 - `Timing.MonthlyTimingRollup.Summarize(IEnumerable<BuildRun>) -> TimingSummary`
 - `Timing.TimingSummary(Overall, Months)`, `TimingTotals`, `MonthlyTimingSummary`
-- `Query.BuildQuery` + `Query.BuildQueryFingerprint.Compute`
+- `Query.BuildQuery`
 - `Query.DetailPolicy { ListOnly, FillMissing }`
 
 `IDelayScheduler` is Core's only timing seam (shape-only until the retry slice),
@@ -90,10 +90,11 @@ Resolving an HTTP-date `Retry-After` happens in the App HTTP adapter.
 
 ```
 <outputRoot>/
-  manifest.json          # retrieval progress + fingerprint
-  manifest.lock          # exclusive single-writer lock
   runs.jsonl             # append-only raw runs; one compact JSON object per line
+  timing-report.xlsx     # report output (default location)
 ```
+
+There is no manifest and no lock (ADR-110); the tool keeps no cross-run state.
 
 Canonical storage is the single `runs.jsonl` log (ADR-109); the `id` inside a
 line is authoritative. The old `<id>__<name>` folder and the per-run
@@ -111,7 +112,7 @@ status, result, reason, poolId, poolName, sourceBranch
 ```
 
 All of these are present in the build-list response, so the detail endpoint is a
-fallback. `source` (`list`|`detail`) makes an incomplete file detectable on resume.
+fallback. `source` (`list`|`detail`) records where the payload came from.
 
 The schema is **flat**. ADO fields outside this contract (nested `definition`/
 `queue`, `requestedFor`, `requestedBy`, `sourceVersion`, `tags`, `uri`,
@@ -186,18 +187,16 @@ truncate.
   the active `detailPolicy` is part of the fingerprint.
 - Retry only `408, 429, 500, 502, 503, 504` plus connection/timeout exceptions.
   **5 attempts (4 retries), waits 1, 2, 4, 8s.** Parse `Retry-After` in both
-  delta-seconds and HTTP-date form. A `Retry-After` over 60s persists status
-  `paused` **and** exits non-zero with a typed, actionable error telling the
-  operator to rerun.
-- A detail-fetch throttle aborts the pipeline to `paused`, not just that run.
+  delta-seconds and HTTP-date form. A `Retry-After` over 60s aborts the run with a
+  typed, actionable error (nothing is persisted; the process exits 1).
+- A detail-fetch throttle aborts the whole run, not just that run.
 - `maxRuns` is a runtime budget applied by trimming the page budget,
-  `$top = min(pageSize, remaining)`, so overshoot is bounded. It leaves status
-  `paused`.
-- An invalid/expired continuation token restarts the listing from the beginning
-  and upserts.
-- A re-run against a `completed` root **refreshes**: it lists from the beginning,
-  adds builds it has not seen, and stops once a page contributes no new runs
-  (ADR-97/100). A run that is not `completed` always pages the whole list.
+  `$top = min(pageSize, remaining)`, so overshoot is bounded. It aborts with a
+  typed error (the `Paused` type is kept only as the carrier of the reason).
+- An invalid/expired continuation token restarts the listing once from the
+  beginning; ids already handled in the pass are not re-appended or re-fetched.
+- ~~A re-run against a `completed` root refreshes and stops early.~~ Removed by
+  ADR-110: every run lists the entire history; there is no early stop.
 - Definition-name resolution was removed with the definition filters (ADR-99).
 - Ctrl+C cancellation propagates through the whole pipeline.
 
@@ -608,6 +607,13 @@ truncate.
 111. **One command.** `retrieve` and `report` are combined: a single invocation
     retrieves and then writes the workbook. There is no report-only mode and no
     verbs; `help` prints usage.
+    **Superseded by ADR-110/111:** ADR-4/7/8/36/42/65/67/68/70/71/78/88/89/91/92/
+    97/100/106 wherever they describe the manifest, the lock, the status machine,
+    resume, the early stop, the on-disk skip or compaction; ADR-79/80/81/82's
+    verb-based CLI surface; ADR-108's cursor-free resume; and ADR-109's unsupported
+    schema count and compaction. ADR-109's single append-only log, last-line-wins
+    dedupe and malformed-line skip remain current. ADR-24/25 remain marked
+    superseded by ADR-109.
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
@@ -626,8 +632,7 @@ truncate.
     to stderr; `--quiet` suppresses non-error progress. No `--verbose` in v1.
 
 Accepted limitations (documented, no action): stale `.tmp` files are ignored by
-the run-log reader and are not garbage-collected at startup; `Manifest` list
-equality is order-sensitive, which is safe while construction stays canonical;
+the run-log reader and are not garbage-collected at startup;
 when a non-conforming response carries **both** `Retry-After` forms the executor
 takes header order rather than strictly preferring delta-seconds; `FileRunStore.ReadAllAsync`
 does not wrap a raw read `IOException` in `StorageException` (upstream layers
@@ -637,10 +642,7 @@ caller's list by reference — they are not value objects (no structural equalit
 and their producers do not mutate them; the workbook's Excel **runtime** behaviour is
 unverified in this environment — `SUMIFS`/`AVERAGEIFS` with the `""` blank criterion
 for the `(unknown)` month and the `SUBTOTAL(103,$A<row>)` visibility helper use
-standard Excel semantics but cannot be executed here; a **malformed** run-log line blocks
-compaction indefinitely (it is counted and never dropped, by design) — safe, since
-readers skip and count it and the manifest still commits, but the log never compacts
-while such a line is present.
+standard Excel semantics but cannot be executed here.
 
 ## Design Review Disposition (F1–F17)
 

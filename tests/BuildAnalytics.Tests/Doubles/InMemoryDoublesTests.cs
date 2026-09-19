@@ -26,7 +26,6 @@ public sealed class InMemoryDoublesTests
 
         Assert.Empty(result.Runs);
         Assert.Equal(0, result.MalformedLineCount);
-        Assert.Equal(0, result.UnsupportedSchemaLineCount);
     }
 
     [Fact]
@@ -40,14 +39,6 @@ public sealed class InMemoryDoublesTests
         var runs = (await store.ReadAllAsync(CancellationToken.None)).Runs;
         Assert.Equal([1, 3], runs.Select(run => run.Id));
         Assert.Equal("second", runs.Single(run => run.Id == 3).BuildNumber);
-    }
-
-    [Fact]
-    public async Task InMemoryManifestStore_TryReadAsync_MissingNull()
-    {
-        var store = new InMemoryManifestStore();
-
-        Assert.Null(await store.TryReadAsync(CancellationToken.None));
     }
 
     [Fact]
@@ -69,7 +60,7 @@ internal sealed class InMemoryRunStore : IRunStore
     private readonly Dictionary<int, BuildRun> _runs = [];
 
     public Task<RunReadResult> ReadAllAsync(CancellationToken cancellationToken)
-        => Task.FromResult(new RunReadResult(_runs.Values.OrderBy(run => run.Id).ToArray(), 0, 0));
+        => Task.FromResult(new RunReadResult(_runs.Values.OrderBy(run => run.Id).ToArray(), 0));
 
     public Task AppendAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
     {
@@ -78,31 +69,6 @@ internal sealed class InMemoryRunStore : IRunStore
             _runs[run.Id] = run;
         }
 
-        return Task.CompletedTask;
-    }
-
-    public Task ReplaceAllAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
-    {
-        _runs.Clear();
-        foreach (var run in runs)
-        {
-            _runs[run.Id] = run;
-        }
-
-        return Task.CompletedTask;
-    }
-}
-
-internal sealed class InMemoryManifestStore : IManifestStore
-{
-    public Manifest? Manifest { get; private set; }
-
-    public Task<Manifest?> TryReadAsync(CancellationToken cancellationToken)
-        => Task.FromResult(Manifest);
-
-    public Task CommitAsync(Manifest manifest, CancellationToken cancellationToken)
-    {
-        Manifest = manifest;
         return Task.CompletedTask;
     }
 }

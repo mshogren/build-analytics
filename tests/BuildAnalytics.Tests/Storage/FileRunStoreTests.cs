@@ -19,7 +19,6 @@ public sealed class FileRunStoreTests
         var result = await store.ReadAllAsync(CancellationToken.None);
         Assert.Equal([run], result.Runs);
         Assert.Equal(0, result.MalformedLineCount);
-        Assert.Equal(0, result.UnsupportedSchemaLineCount);
     }
 
     [Fact]
@@ -32,7 +31,6 @@ public sealed class FileRunStoreTests
 
         Assert.Empty(result.Runs);
         Assert.Equal(0, result.MalformedLineCount);
-        Assert.Equal(0, result.UnsupportedSchemaLineCount);
     }
 
     [Fact]
@@ -126,7 +124,6 @@ public sealed class FileRunStoreTests
 
         Assert.Equal([1], result.Runs.Select(run => run.Id));
         Assert.Equal(1, result.MalformedLineCount);
-        Assert.Equal(0, result.UnsupportedSchemaLineCount);
     }
 
     [Fact]
@@ -141,11 +138,10 @@ public sealed class FileRunStoreTests
 
         Assert.Equal([1], result.Runs.Select(run => run.Id));
         Assert.Equal(1, result.MalformedLineCount);
-        Assert.Equal(0, result.UnsupportedSchemaLineCount);
     }
 
     [Fact]
-    public async Task ReadAll_counts_and_excludes_unsupported_schema_lines()
+    public async Task ReadAll_counts_a_wrong_schema_version_as_malformed()
     {
         using var root = new TempOutputRoot();
         var logPath = Path.Combine(root.Path, "runs.jsonl");
@@ -156,8 +152,7 @@ public sealed class FileRunStoreTests
         var result = await new FileRunStore(root.Path, new PhysicalFileOperations()).ReadAllAsync(CancellationToken.None);
 
         Assert.Equal([1], result.Runs.Select(run => run.Id));
-        Assert.Equal(0, result.MalformedLineCount);
-        Assert.Equal(1, result.UnsupportedSchemaLineCount);
+        Assert.Equal(1, result.MalformedLineCount);
     }
 
     [Fact]
@@ -188,39 +183,7 @@ public sealed class FileRunStoreTests
     }
 
     [Fact]
-    public async Task ReplaceAll_rewrites_the_file_compactly()
-    {
-        using var root = new TempOutputRoot();
-        var store = new FileRunStore(root.Path, new PhysicalFileOperations());
-        await store.AppendAsync([TestRuns.Create(id: 1, buildNumber: "old")], CancellationToken.None);
-        await store.AppendAsync([TestRuns.Create(id: 1, buildNumber: "new"), TestRuns.Create(id: 2)], CancellationToken.None);
-
-        await store.ReplaceAllAsync([TestRuns.Create(id: 1, buildNumber: "new"), TestRuns.Create(id: 2)], CancellationToken.None);
-
-        var text = await File.ReadAllTextAsync(Path.Combine(root.Path, "runs.jsonl"), CancellationToken.None);
-        Assert.Equal(2, text.Split('\n').Length - 1);
-        var runs = (await store.ReadAllAsync(CancellationToken.None)).Runs;
-        Assert.Equal([1, 2], runs.Select(run => run.Id));
-        Assert.Equal("new", runs[0].BuildNumber);
-    }
-
-    [Fact]
-    public async Task ReplaceAll_orders_temp_flush_rename_and_leaves_no_temp_file()
-    {
-        using var root = new TempOutputRoot();
-        var recording = new RecordingFileOperations(new PhysicalFileOperations());
-        var store = new FileRunStore(root.Path, recording);
-
-        await store.ReplaceAllAsync([TestRuns.Create(id: 2)], CancellationToken.None);
-
-        Assert.Equal(
-            [FileOperation.WriteTemp, FileOperation.FlushToDisk, FileOperation.Rename],
-            recording.Calls.Select(call => call.Operation));
-        Assert.DoesNotContain(Directory.GetFiles(root.Path), file => file.EndsWith(".tmp", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task ReplaceAll_failure_leaves_the_prior_file_intact()
+    public async Task Append_failure_leaves_the_prior_file_intact()
     {
         using var root = new TempOutputRoot();
         var store = new FileRunStore(root.Path, new PhysicalFileOperations());
@@ -228,15 +191,29 @@ public sealed class FileRunStoreTests
 
         var failing = new RecordingFileOperations(
             new PhysicalFileOperations(),
-            (operation, path) => operation == FileOperation.Rename && path.EndsWith("runs.jsonl", StringComparison.Ordinal)
-                ? new IOException("injected")
-                : null);
+            (operation, _) => operation == FileOperation.Append ? new IOException("injected") : null);
         var failingStore = new FileRunStore(root.Path, failing);
 
-        await Assert.ThrowsAsync<IOException>(() => failingStore.ReplaceAllAsync([TestRuns.Create(id: 2)], CancellationToken.None));
+        await Assert.ThrowsAsync<IOException>(() => failingStore.AppendAsync([TestRuns.Create(id: 2)], CancellationToken.None));
 
         Assert.Equal([1], (await store.ReadAllAsync(CancellationToken.None)).Runs.Select(run => run.Id));
-        Assert.DoesNotContain(Directory.GetFiles(root.Path), file => file.EndsWith(".tmp", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Append_after_a_truncated_tail_keeps_the_new_line_readable()
+    {
+        using var root = new TempOutputRoot();
+        var logPath = Path.Combine(root.Path, "runs.jsonl");
+        var valid = JsonSerializer.Serialize(TestRuns.Create(id: 1), BuildAnalyticsJson.Options);
+        await File.WriteAllTextAsync(logPath, valid + "\n{\"schemaVersion\":1,\"id\":2", CancellationToken.None);
+
+        await new FileRunStore(root.Path, new PhysicalFileOperations())
+            .AppendAsync([TestRuns.Create(id: 3)], CancellationToken.None);
+
+        var result = await new FileRunStore(root.Path, new PhysicalFileOperations())
+            .ReadAllAsync(CancellationToken.None);
+        Assert.Equal([1, 3], result.Runs.Select(run => run.Id));
+        Assert.Equal(1, result.MalformedLineCount);
     }
 
     [Fact]
@@ -305,60 +282,6 @@ public sealed class FileRunStoreTests
 
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
             () => store.AppendAsync([TestRuns.Create(id: 0)], CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task ReplaceAll_non_positive_run_id_throws()
-    {
-        using var root = new TempOutputRoot();
-        var store = new FileRunStore(root.Path, new PhysicalFileOperations());
-
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
-            () => store.ReplaceAllAsync([TestRuns.Create(id: -1)], CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task Unsupported_line_is_not_counted_when_a_later_valid_line_has_the_same_id()
-    {
-        using var root = new TempOutputRoot();
-        var logPath = Path.Combine(root.Path, "runs.jsonl");
-        var bad = JsonSerializer.Serialize(TestRuns.Create(id: 2) with { SchemaVersion = 99 }, BuildAnalyticsJson.Options);
-        var valid = JsonSerializer.Serialize(TestRuns.Create(id: 1), BuildAnalyticsJson.Options);
-        var repaired = JsonSerializer.Serialize(TestRuns.Create(id: 2, buildNumber: "repaired"), BuildAnalyticsJson.Options);
-        await File.WriteAllTextAsync(logPath, bad + "\n" + valid + "\n" + repaired + "\n", CancellationToken.None);
-
-        var store = new FileRunStore(root.Path, new PhysicalFileOperations());
-        var result = await store.ReadAllAsync(CancellationToken.None);
-
-        Assert.Equal(0, result.UnsupportedSchemaLineCount);
-        Assert.Equal([1, 2], result.Runs.Select(run => run.Id));
-
-        // A clean read permits compaction; the superseded bad line is then physically dropped.
-        await store.ReplaceAllAsync(result.Runs, CancellationToken.None);
-
-        var lines = (await File.ReadAllTextAsync(logPath, CancellationToken.None))
-            .Split('\n')
-            .Where(line => line.Length > 0)
-            .ToArray();
-        Assert.Equal(2, lines.Length);
-        Assert.Equal(0, (await store.ReadAllAsync(CancellationToken.None)).UnsupportedSchemaLineCount);
-    }
-
-    [Fact]
-    public async Task Append_after_a_truncated_tail_keeps_the_new_line_readable()
-    {
-        using var root = new TempOutputRoot();
-        var logPath = Path.Combine(root.Path, "runs.jsonl");
-        var valid = JsonSerializer.Serialize(TestRuns.Create(id: 1), BuildAnalyticsJson.Options);
-        await File.WriteAllTextAsync(logPath, valid + "\n{\"schemaVersion\":1,\"id\":2", CancellationToken.None);
-
-        await new FileRunStore(root.Path, new PhysicalFileOperations())
-            .AppendAsync([TestRuns.Create(id: 3)], CancellationToken.None);
-
-        var result = await new FileRunStore(root.Path, new PhysicalFileOperations())
-            .ReadAllAsync(CancellationToken.None);
-        Assert.Equal([1, 3], result.Runs.Select(run => run.Id));
-        Assert.Equal(1, result.MalformedLineCount);
     }
 
     private static async Task AppendRawAsync(string path, string text)

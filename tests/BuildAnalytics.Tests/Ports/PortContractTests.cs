@@ -13,11 +13,8 @@ public sealed class PortContractTests
     {
         AssertMethod(typeof(IBuildSource), "ListAsync", typeof(Task<BuildPage>), typeof(BuildQuery), typeof(string), typeof(CancellationToken));
         AssertMethod(typeof(IBuildSource), "GetDetailAsync", typeof(Task<BuildRun>), typeof(BuildQuery), typeof(int), typeof(CancellationToken));
-        AssertMethod(typeof(IManifestStore), "TryReadAsync", typeof(Task<Manifest>), typeof(CancellationToken));
-        AssertMethod(typeof(IManifestStore), "CommitAsync", typeof(Task), typeof(Manifest), typeof(CancellationToken));
         AssertMethod(typeof(IRunStore), "ReadAllAsync", typeof(Task<RunReadResult>), typeof(CancellationToken));
         AssertMethod(typeof(IRunStore), "AppendAsync", typeof(Task), typeof(IReadOnlyList<BuildRun>), typeof(CancellationToken));
-        AssertMethod(typeof(IRunStore), "ReplaceAllAsync", typeof(Task), typeof(IReadOnlyList<BuildRun>), typeof(CancellationToken));
         AssertMethod(typeof(ITimingReportWriter), "WriteAsync", typeof(Task), typeof(TimingReport), typeof(CancellationToken));
         AssertMethod(typeof(IDelayScheduler), "DelayAsync", typeof(Task), typeof(TimeSpan), typeof(CancellationToken));
     }
@@ -49,7 +46,6 @@ public sealed class PortContractTests
     private static IEnumerable<Type> PortTypes()
     {
         yield return typeof(IBuildSource);
-        yield return typeof(IManifestStore);
         yield return typeof(IRunStore);
         yield return typeof(ITimingReportWriter);
         yield return typeof(IDelayScheduler);

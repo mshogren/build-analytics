@@ -5,9 +5,10 @@ using BuildAnalytics.Core.Query;
 namespace BuildAnalytics.App.Cli;
 
 /// <summary>
-/// Pure argument parser for <c>retrieve</c> / <c>report</c> / <c>help</c> (ADR-79..81, ADR-98).
-/// Config values are passed in as data; this type performs no IO. Legacy flags are unknown
-/// options and therefore usage errors. No process-exiting here.
+/// Pure argument parser for the single combined action (ADR-98/111). Config values are passed
+/// in as data; this type performs no IO. There are no verbs, and legacy flags (including the
+/// old <c>retrieve</c>/<c>report</c> verbs) are unknown options and therefore usage errors.
+/// No process-exiting here.
 /// </summary>
 public static class CliParser
 {
@@ -15,25 +16,14 @@ public static class CliParser
 
     public static CliParseResult Parse(string[] args, BuildAnalyticsConfig? config = null)
     {
-        if (args is null || args.Length == 0)
-        {
-            return CliParseResult.Help();
-        }
-
-        var verb = args[0];
-        if (IsHelp(verb))
+        if (args is null || args.Length == 0 || (args.Length > 0 && IsHelp(args[0])))
         {
             return CliParseResult.Help();
         }
 
         try
         {
-            return verb switch
-            {
-                "retrieve" => ParseRetrieve(args[1..], config),
-                "report" => ParseReport(args[1..], config),
-                _ => CliParseResult.UsageError($"Unknown command '{verb}'. Expected 'retrieve', 'report', or 'help'.")
-            };
+            return CliParseResult.ForRun(ParseCliOptions(args, config));
         }
         catch (CliUsageException exception)
         {
@@ -41,11 +31,12 @@ public static class CliParser
         }
     }
 
-    private static CliParseResult ParseRetrieve(string[] args, BuildAnalyticsConfig? config)
+    private static CliOptions ParseCliOptions(string[] args, BuildAnalyticsConfig? config)
     {
         string? organization = null;
         string? project = null;
         string? outputRoot = null;
+        string? outputPath = null;
         string? apiVersion = null;
         var detailPolicy = (DetailPolicy?)null;
         int? maxRuns = null;
@@ -80,6 +71,9 @@ public static class CliParser
                 case "--output-root":
                     outputRoot = Value();
                     break;
+                case "--out":
+                    outputPath = Value();
+                    break;
                 case "--detail":
                     detailPolicy = ParseDetailPolicy(Value());
                     break;
@@ -111,73 +105,20 @@ public static class CliParser
 
         var effectiveDetail = detailPolicy
             ?? (config?.Detail is { } configuredDetail ? ParseDetailPolicy(configuredDetail) : DetailPolicy.ListOnly);
-        var effectiveApiVersion = Coalesce(apiVersion, config?.ApiVersion, DefaultApiVersion);
-        var effectiveMaxRuns = maxRuns ?? config?.MaxRuns ?? int.MaxValue;
-        var effectiveQuiet = quiet || (config?.Quiet ?? false);
-
-        return CliParseResult.ForRetrieve(new RetrieveOptions(
-            effectiveOrganization!,
-            effectiveProject!,
-            effectiveOutputRoot!,
-            effectiveDetail,
-            effectiveMaxRuns,
-            effectiveApiVersion,
-            effectiveQuiet));
-    }
-
-    private static CliParseResult ParseReport(string[] args, BuildAnalyticsConfig? config)
-    {
-        string? outputRoot = null;
-        string? outputPath = null;
-        var quiet = false;
-
-        for (var index = 0; index < args.Length; index++)
-        {
-            var (name, inline) = Split(args[index]);
-            string Value()
-            {
-                if (inline is not null)
-                {
-                    return inline;
-                }
-
-                if (index + 1 >= args.Length)
-                {
-                    throw new CliUsageException($"Missing value for '{name}'.");
-                }
-
-                return args[++index];
-            }
-
-            switch (name)
-            {
-                case "--output-root":
-                    outputRoot = Value();
-                    break;
-                case "--out":
-                    outputPath = Value();
-                    break;
-                case "--quiet":
-                    quiet = true;
-                    break;
-                case "--config":
-                    _ = Value();
-                    break;
-                default:
-                    throw new CliUsageException($"Unknown option '{name}'.");
-            }
-        }
-
-        var effectiveOutputRoot = outputRoot ?? config?.OutputRoot;
-        Require(effectiveOutputRoot, "--output-root");
-
         var effectiveOutputPath = Coalesce(
             outputPath,
             config?.Out,
             Path.Combine(effectiveOutputRoot!, ExcelTimingReportWriter.DefaultFileName));
-        var effectiveQuiet = quiet || (config?.Quiet ?? false);
 
-        return CliParseResult.ForReport(new ReportOptions(effectiveOutputRoot!, effectiveOutputPath, effectiveQuiet));
+        return new CliOptions(
+            effectiveOrganization!,
+            effectiveProject!,
+            effectiveOutputRoot!,
+            effectiveOutputPath,
+            effectiveDetail,
+            maxRuns ?? config?.MaxRuns ?? int.MaxValue,
+            Coalesce(apiVersion, config?.ApiVersion, DefaultApiVersion),
+            quiet || (config?.Quiet ?? false));
     }
 
     private static bool IsHelp(string value)

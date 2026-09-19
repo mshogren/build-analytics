@@ -2,39 +2,33 @@ using BuildAnalytics.Core.Query;
 
 namespace BuildAnalytics.App.Cli;
 
-/// <summary>Top-level command selected by the CLI parser.</summary>
-public enum CliVerb
-{
-    Help,
-    Retrieve,
-    Report
-}
-
-/// <summary>Parsed <c>retrieve</c> options. Runtime budget defaults to unbounded.</summary>
-public sealed record RetrieveOptions(
+/// <summary>
+/// Parsed options for the single combined action (ADR-111): retrieve the whole history, then
+/// write the report. Runtime budget defaults to unbounded.
+/// </summary>
+public sealed record CliOptions(
     string Organization,
     string Project,
     string OutputRoot,
+    string OutputPath,
     DetailPolicy DetailPolicy,
     int MaxRuns,
     string ApiVersion,
     bool Quiet);
 
-/// <summary>Parsed <c>report</c> options.</summary>
-public sealed record ReportOptions(string OutputRoot, string OutputPath, bool Quiet);
-
 /// <summary>
-/// Pure parse result. <see cref="CliParser.Parse"/> never exits the process; only Main maps this to a code.
+/// Pure parse result. <see cref="CliParser.Parse"/> never exits the process; only Main maps
+/// this to an exit code.
 /// </summary>
-public sealed record CliParseResult(CliVerb Verb, RetrieveOptions? Retrieve, ReportOptions? Report, string? Error)
+public sealed record CliParseResult(CliOptions? Options, string? Error)
 {
     public bool IsError => Error is not null;
 
-    public static CliParseResult Help() => new(CliVerb.Help, null, null, null);
+    public bool IsHelp => Options is null && Error is null;
 
-    public static CliParseResult ForRetrieve(RetrieveOptions options) => new(CliVerb.Retrieve, options, null, null);
+    public static CliParseResult Help() => new(null, null);
 
-    public static CliParseResult ForReport(ReportOptions options) => new(CliVerb.Report, null, options, null);
+    public static CliParseResult ForRun(CliOptions options) => new(options, null);
 
-    public static CliParseResult UsageError(string message) => new(CliVerb.Help, null, null, message);
+    public static CliParseResult UsageError(string message) => new(null, message);
 }

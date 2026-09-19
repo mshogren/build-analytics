@@ -1,6 +1,5 @@
 using BuildAnalytics.App.Cli;
 using BuildAnalytics.Core.Errors;
-using BuildAnalytics.Core.Models;
 
 namespace BuildAnalytics.Tests.Cli;
 
@@ -9,9 +8,8 @@ public sealed class CliErrorTextTests
     [Fact]
     public void Typed_errors_keep_their_sanitized_message()
     {
-        Assert.Equal(
-            new ReportingErrorException(ManifestStatus.Completed).Message,
-            CliErrorText.Describe(new ReportingErrorException(ManifestStatus.Completed)));
+        var write = new ReportingWriteException("report.xlsx", "the destination is a directory.");
+        Assert.Equal(write.Message, CliErrorText.Describe(write));
 
         var adoSpecific = new AdoRequestException(403, "/project/_apis/build/builds", "corr-1");
         Assert.Equal(adoSpecific.Message, CliErrorText.Describe(adoSpecific));
@@ -20,7 +18,7 @@ public sealed class CliErrorTextTests
     [Fact]
     public void Storage_failures_are_generic()
     {
-        var text = CliErrorText.Describe(new StorageException("failed at /home/node/secret/run.json"));
+        var text = CliErrorText.Describe(new StorageException("failed at /home/node/secret/runs.jsonl"));
 
         Assert.DoesNotContain("/home", text, StringComparison.Ordinal);
         Assert.DoesNotContain("secret", text, StringComparison.Ordinal);

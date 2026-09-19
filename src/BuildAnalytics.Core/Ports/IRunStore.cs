@@ -3,14 +3,11 @@ using BuildAnalytics.Core.Models;
 namespace BuildAnalytics.Core.Ports;
 
 /// <summary>
-/// Result of reading the append-only run log (ADR-109). <see cref="Runs"/> is deduped
-/// (last line wins) and sorted by id. Malformed/unsupported lines are excluded from
-/// <see cref="Runs"/> and counted so the caller can repair or abort.
+/// Result of reading the append-only run log (ADR-109/110). <see cref="Runs"/> is deduped
+/// (last line wins) and sorted by id. A malformed line - including one with an unexpected
+/// <c>schemaVersion</c> - is skipped and counted.
 /// </summary>
-public sealed record RunReadResult(
-    IReadOnlyList<BuildRun> Runs,
-    int MalformedLineCount,
-    int UnsupportedSchemaLineCount);
+public sealed record RunReadResult(IReadOnlyList<BuildRun> Runs, int MalformedLineCount);
 
 /// <summary>
 /// Stores raw run payloads in a single append-only log (<c>runs.jsonl</c>), one compact
@@ -22,6 +19,4 @@ public interface IRunStore
     Task<RunReadResult> ReadAllAsync(CancellationToken cancellationToken);
 
     Task AppendAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken);
-
-    Task ReplaceAllAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken);
 }

@@ -12,10 +12,10 @@ var application = new CliApplication(
     new SystemConsoleOutput(),
     new DefaultHttpMessageHandlerFactory());
 
-// ADR-98: the config loader owns the IO; the parser stays pure. Config only applies to the
-// retrieve/report verbs, so help and unknown commands still work with a broken config file.
-var loadsConfig = args.Length > 0 && args[0] is "retrieve" or "report";
-var config = loadsConfig ? ConfigLoader.Load(args) : new ConfigLoadResult(null, null);
+// ADR-98: the config loader owns the IO; the parser stays pure. Help is answered without
+// touching the config file, so a broken config cannot hide the usage text.
+var isHelp = args.Length == 0 || args[0] is "help" or "--help" or "-h";
+var config = isHelp ? new ConfigLoadResult(null, null) : ConfigLoader.Load(args);
 if (config.Error is not null)
 {
     Console.Error.WriteLine(config.Error);

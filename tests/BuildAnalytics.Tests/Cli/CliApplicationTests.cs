@@ -2,11 +2,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Text.Json;
 using BuildAnalytics.App.Cli;
-using BuildAnalytics.App.Storage;
-using BuildAnalytics.Core;
-using BuildAnalytics.Core.Models;
 using BuildAnalytics.Tests.AzureDevOps;
 using BuildAnalytics.Tests.Storage;
 
@@ -15,7 +11,7 @@ namespace BuildAnalytics.Tests.Cli;
 public sealed class CliApplicationTests
 {
     [Fact]
-    public async Task Retrieve_success_writes_a_completed_manifest_and_uses_basic_auth()
+    public async Task Run_success_retrieves_then_writes_the_report_and_uses_basic_auth()
     {
         using var root = new TempOutputRoot();
         AuthenticationHeaderValue? captured = null;
@@ -25,36 +21,36 @@ public sealed class CliApplicationTests
             captured = request.Headers.Authorization;
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("""{ "value": [] }""", Encoding.UTF8, "application/json")
+                Content = new StringContent("""{ "count": 0, "value": [] }""", Encoding.UTF8, "application/json")
             };
         });
 
         var console = new CapturingConsole();
         var factory = new CountingHandlerFactory(() => handler);
         var app = new CliApplication(new FakeCredentialProvider("secret"), console, factory, delay: new FakeDelayScheduler());
+        var outputPath = Path.Combine(root.Path, "report.xlsx");
 
         var code = await app.RunAsync(
-            ["retrieve", "--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
+            ["--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path, "--out", outputPath],
             CancellationToken.None);
 
         Assert.Equal(0, code);
         Assert.Equal("Basic", captured!.Scheme);
         Assert.Equal(Convert.ToBase64String(Encoding.ASCII.GetBytes(":secret")), captured.Parameter);
-
-        using var reader = FileManifestStore.OpenReadOnly(root.Path);
-        var manifest = await reader.TryReadAsync(CancellationToken.None);
-        Assert.Equal(ManifestStatus.Completed, manifest!.Status);
+        Assert.True(File.Exists(outputPath));
+        Assert.Contains(outputPath, console.Stdout);
+        Assert.Contains("Generating report...", console.Stderr);
     }
 
     [Fact]
-    public async Task Retrieve_without_pat_fails_before_touching_the_transport()
+    public async Task Run_without_pat_fails_before_touching_the_transport()
     {
         using var root = new TempOutputRoot();
         var factory = new CountingHandlerFactory(() => new ScriptedHttpMessageHandler());
         var app = new CliApplication(new FakeCredentialProvider(null), new CapturingConsole(), factory);
 
         var code = await app.RunAsync(
-            ["retrieve", "--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
+            ["--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
             CancellationToken.None);
 
         Assert.Equal(1, code);
@@ -62,7 +58,7 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
-    public async Task Retrieve_paused_returns_1_and_surfaces_structured_pause_fields()
+    public async Task Run_paused_returns_1_and_surfaces_the_pause_reason()
     {
         using var root = new TempOutputRoot();
         var handler = new ScriptedHttpMessageHandler();
@@ -76,7 +72,7 @@ public sealed class CliApplicationTests
             delay: new FakeDelayScheduler());
 
         var code = await app.RunAsync(
-            ["retrieve", "--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
+            ["--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
             CancellationToken.None);
 
         Assert.Equal(1, code);
@@ -84,11 +80,11 @@ public sealed class CliApplicationTests
         Assert.Contains("paused", error, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("RetryAfterTooLong", error, StringComparison.Ordinal);
         Assert.Contains("retryAfter", error, StringComparison.Ordinal);
-        Assert.DoesNotContain("Rerun to resume", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("Generating report...", error, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Retrieve_disposes_the_transport_after_the_run()
+    public async Task Run_disposes_the_transport_after_the_run()
     {
         using var root = new TempOutputRoot();
         HttpMessageHandler? created = null;
@@ -96,14 +92,14 @@ public sealed class CliApplicationTests
         {
             created = new TrackingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("""{ "value": [] }""", Encoding.UTF8, "application/json")
+                Content = new StringContent("""{ "count": 0, "value": [] }""", Encoding.UTF8, "application/json")
             });
             return created;
         });
 
         var app = new CliApplication(new FakeCredentialProvider("secret"), new CapturingConsole(), factory, delay: new FakeDelayScheduler());
         var code = await app.RunAsync(
-            ["retrieve", "--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
+            ["--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
             CancellationToken.None);
 
         Assert.Equal(0, code);
@@ -111,7 +107,7 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
-    public async Task Retrieve_cancellation_propagates_to_the_caller()
+    public async Task Run_cancellation_propagates_to_the_caller()
     {
         using var root = new TempOutputRoot();
         var app = new CliApplication(
@@ -124,64 +120,33 @@ public sealed class CliApplicationTests
 
         await Assert.ThrowsAsync<OperationCanceledException>(
             () => app.RunAsync(
-                ["retrieve", "--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
+                ["--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
                 cts.Token));
     }
 
     [Fact]
-    public async Task Report_success_writes_the_workbook_and_creates_no_http_handler()
+    public async Task Run_clears_the_previous_log_and_report_but_keeps_unrelated_files()
     {
         using var root = new TempOutputRoot();
-        await WriteCompletedRootAsync(root.Path);
+        var logPath = Path.Combine(root.Path, "runs.jsonl");
+        var reportPath = Path.Combine(root.Path, "report.xlsx");
+        var unrelated = Path.Combine(root.Path, "keep-me.txt");
+        File.WriteAllText(logPath, "{\"schemaVersion\":1,\"id\":99}\n");
+        File.WriteAllText(reportPath, "stale");
+        File.WriteAllText(unrelated, "keep");
 
-        var factory = new CountingHandlerFactory(() => throw new InvalidOperationException("report must not use the network"));
-        var console = new CapturingConsole();
-        var app = new CliApplication(new FakeCredentialProvider("secret"), console, factory);
-        var outputPath = Path.Combine(root.Path, "report.xlsx");
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueJson("""{ "count": 0, "value": [] }""");
+        var app = new CliApplication(new FakeCredentialProvider("secret"), new CapturingConsole(), new CountingHandlerFactory(() => handler), delay: new FakeDelayScheduler());
 
         var code = await app.RunAsync(
-            ["report", "--output-root", root.Path, "--out", outputPath],
+            ["--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path, "--out", reportPath],
             CancellationToken.None);
 
         Assert.Equal(0, code);
-        Assert.Equal(0, factory.Created);
-        Assert.True(File.Exists(outputPath));
-        Assert.Contains(outputPath, console.Stdout);
-    }
-
-    [Fact]
-    public async Task Report_without_a_completed_manifest_returns_1()
-    {
-        using var root = new TempOutputRoot();
-        var app = new CliApplication(new FakeCredentialProvider("secret"), new CapturingConsole(), new CountingHandlerFactory(() => new ScriptedHttpMessageHandler()));
-
-        var code = await app.RunAsync(["report", "--output-root", root.Path], CancellationToken.None);
-
-        Assert.Equal(1, code);
-    }
-
-    [Fact]
-    public async Task Report_write_failure_returns_1_with_sanitized_stderr()
-    {
-        using var root = new TempOutputRoot();
-        await WriteCompletedRootAsync(root.Path);
-
-        var blocked = Path.Combine(root.Path, "blocked.xlsx");
-        Directory.CreateDirectory(blocked);
-
-        var console = new CapturingConsole();
-        var app = new CliApplication(
-            new FakeCredentialProvider("secret"),
-            console,
-            new CountingHandlerFactory(() => throw new InvalidOperationException("no network")));
-
-        var code = await app.RunAsync(["report", "--output-root", root.Path, "--out", blocked], CancellationToken.None);
-
-        Assert.Equal(1, code);
-        var stderr = string.Join("\n", console.Stderr);
-        Assert.Contains("blocked.xlsx", stderr, StringComparison.Ordinal);
-        Assert.DoesNotContain(root.Path, stderr, StringComparison.Ordinal);
-        Assert.DoesNotContain("/home", stderr, StringComparison.Ordinal);
+        Assert.False(File.Exists(logPath));
+        Assert.True(File.Exists(unrelated));
+        Assert.True(File.Exists(reportPath));
     }
 
     [Fact]
@@ -190,10 +155,10 @@ public sealed class CliApplicationTests
         var console = new CapturingConsole();
         var app = new CliApplication(new FakeCredentialProvider("secret"), console, new CountingHandlerFactory(() => new ScriptedHttpMessageHandler()));
 
-        var code = await app.RunAsync(["retrieve", "--project", "p", "--output-root", "r"], CancellationToken.None);
+        var code = await app.RunAsync(["--project", "p", "--output-root", "r"], CancellationToken.None);
 
         Assert.Equal(2, code);
-        Assert.Contains("retrieve", string.Join("\n", console.Stderr), StringComparison.Ordinal);
+        Assert.Contains("--org", string.Join("\n", console.Stderr), StringComparison.Ordinal);
         Assert.Empty(console.Stdout);
     }
 
@@ -206,11 +171,11 @@ public sealed class CliApplicationTests
         var code = await app.RunAsync([], CancellationToken.None);
 
         Assert.Equal(0, code);
-        Assert.Contains("retrieve", string.Join("\n", console.Stdout), StringComparison.Ordinal);
+        Assert.Contains("--org", string.Join("\n", console.Stdout), StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Retrieve_writes_progress_to_stderr_and_quiet_suppresses_it()
+    public async Task Progress_writes_a_line_per_page_and_quiet_suppresses_it()
     {
         using var root = new TempOutputRoot();
         using var quietRoot = new TempOutputRoot();
@@ -220,14 +185,14 @@ public sealed class CliApplicationTests
         var app = new CliApplication(new FakeCredentialProvider("secret"), console, new CountingHandlerFactory(() => handler), delay: new FakeDelayScheduler());
 
         var code = await app.RunAsync(
-            ["retrieve", "--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
+            ["--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
             CancellationToken.None);
 
         Assert.Equal(0, code);
         var stderr = string.Join("\n", console.Stderr);
-        Assert.Contains("Retrieving", stderr, StringComparison.Ordinal);
-        Assert.Contains("page 1", stderr, StringComparison.Ordinal);
-        Assert.Empty(console.Stdout);
+        Assert.Contains("Retrieving page 1 - 0 builds", stderr, StringComparison.Ordinal);
+        Assert.Contains("Generating report...", stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain(console.Stdout, line => line.Contains("page", StringComparison.OrdinalIgnoreCase));
 
         var quietHandler = new ScriptedHttpMessageHandler();
         quietHandler.EnqueueJson("""{ "count": 0, "value": [] }""");
@@ -235,7 +200,7 @@ public sealed class CliApplicationTests
         var quietApp = new CliApplication(new FakeCredentialProvider("secret"), quietConsole, new CountingHandlerFactory(() => quietHandler), delay: new FakeDelayScheduler());
 
         var quietCode = await quietApp.RunAsync(
-            ["retrieve", "--org", "https://dev.azure.com/org", "--project", "p", "--output-root", quietRoot.Path, "--quiet"],
+            ["--org", "https://dev.azure.com/org", "--project", "p", "--output-root", quietRoot.Path, "--quiet"],
             CancellationToken.None);
 
         Assert.Equal(0, quietCode);
@@ -243,7 +208,7 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
-    public async Task Retrieve_can_take_its_required_values_from_config()
+    public async Task Run_can_take_its_required_values_from_config()
     {
         using var root = new TempOutputRoot();
         var handler = new ScriptedHttpMessageHandler();
@@ -252,30 +217,8 @@ public sealed class CliApplicationTests
         var app = new CliApplication(new FakeCredentialProvider("secret"), console, new CountingHandlerFactory(() => handler), delay: new FakeDelayScheduler());
         var config = new BuildAnalyticsConfig(Organization: "https://dev.azure.com/org", Project: "p", OutputRoot: root.Path);
 
-        var code = await app.RunAsync(["retrieve"], config, CancellationToken.None);
+        var code = await app.RunAsync(["--quiet"], config, CancellationToken.None);
 
         Assert.Equal(0, code);
-        using var reader = FileManifestStore.OpenReadOnly(root.Path);
-        var manifest = await reader.TryReadAsync(CancellationToken.None);
-        Assert.Equal(ManifestStatus.Completed, manifest!.Status);
-    }
-
-    private static async Task WriteCompletedRootAsync(string root)
-    {
-        var manifest = new Manifest(
-            Manifest.CurrentSchemaVersion,
-            "fp",
-            ManifestStatus.Completed,
-            DateTimeOffset.UnixEpoch,
-            DateTimeOffset.UnixEpoch,
-            null,
-            []);
-        await File.WriteAllBytesAsync(
-            Path.Combine(root, "manifest.json"),
-            JsonSerializer.SerializeToUtf8Bytes(manifest, BuildAnalyticsJson.Options));
-
-        await File.WriteAllBytesAsync(
-            Path.Combine(root, "runs.jsonl"),
-            [.. JsonSerializer.SerializeToUtf8Bytes(TestRuns.Create(id: 1), BuildAnalyticsJson.Options), (byte)'\n']);
     }
 }
