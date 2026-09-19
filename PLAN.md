@@ -576,14 +576,18 @@ truncate.
     needs, so no per-build detail phase is required).
 109. **One run file, append-only.** Runs live in a single
     `<outputRoot>/runs.jsonl` — one compact JSON object per line (camelCase, string
-    enums), appended per page and flushed durably before the manifest commit.
-    Readers dedupe by run id (a later line supersedes an earlier one) and tolerate
-    a truncated final line. A malformed line is skipped and counted; a line with an
-    unsupported `schemaVersion` is reported via a count, so the pipeline repairs it
-    (re-fetch) while reporting aborts (ADR-77). On completion the file is rewritten
-    once without superseded duplicates via the atomic temp→flush→rename path.
-    `runs/<runId>/run.json` and the `runs/` directory are removed; `IRunStore`
-    becomes `ReadAllAsync` / `AppendAsync` / `ReplaceAllAsync`.
+    enums), appended per page and flushed durably before the manifest commit; an
+    append that follows a crashed, newline-less tail first writes a leading newline.
+    Readers dedupe by run id (a later line supersedes an earlier one) and tolerate a
+    final line missing its newline as a crash fragment. A **malformed** line is
+    counted and **never dropped**. An **unsupported `schemaVersion`** line is
+    counted only while no later valid line exists for the same id, so a re-fetch
+    clears it — the pipeline repairs (ADR-83) while reporting aborts (ADR-77).
+    Compaction (a rewrite without superseded duplicates, atomic temp→flush→rename)
+    runs **only when both counts are zero**, so a bad line can never be erased into
+    a silently incomplete report. `runs/<runId>/run.json` and the `runs/` directory
+    are removed; `IRunStore` becomes `ReadAllAsync` / `AppendAsync` /
+    `ReplaceAllAsync`.
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
