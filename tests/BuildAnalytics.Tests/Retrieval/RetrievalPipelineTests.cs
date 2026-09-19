@@ -24,8 +24,21 @@ public sealed class RetrievalPipelineTests
         Assert.Equal([null, "t1"], source.ListCalls.Select(call => call.Token));
         Assert.Equal([1, 2], runs.Writes.Select(run => run.Id));
         Assert.Equal(
-            ["progress:started", "list:<start>", "progress:page:1:1", "run:1", "list:t1", "progress:page:2:1", "run:2", "progress:completed:2:2"],
+            ["progress:started", "list:<start>", "run:1", "progress:page:1:1", "list:t1", "run:2", "progress:page:2:1", "progress:completed:2:2"],
             log.Events);
+    }
+
+    [Fact]
+    public async Task Page_is_not_announced_when_the_append_fails()
+    {
+        var (pipeline, source, runs, _, progress) = Create();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], null));
+        runs.FailOnWrite.Add(1);
+
+        await Assert.ThrowsAsync<StorageException>(() => pipeline.RunAsync(Query(), CancellationToken.None));
+
+        // FIX1: the page line is emitted only after the durable append succeeds.
+        Assert.DoesNotContain("page:1:1", progress.Events);
     }
 
     [Fact]

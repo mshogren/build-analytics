@@ -122,6 +122,9 @@ The legacy `runs.json` artifact is **dropped**; nothing reads it.
 
 ## Fingerprint
 
+> **Superseded by ADR-110.** There is no fingerprint and no cross-run compatibility
+> check; every invocation clears the log and retrieves the full history.
+
 Identity is the **effective query**:
 
 ```
@@ -146,6 +149,9 @@ use a new output root.
 
 ## Manifest & Durability
 
+> **Superseded by ADR-110.** There is no `manifest.json` and no `manifest.lock`.
+> The run log is append-only and cleared at the start of each invocation.
+
 `manifest.json` holds: `schemaVersion`, fingerprint, status, timestamps,
 `lastError`, and failed run ids. There is **no cursor** (ADR-108): the durable
 progress marker is the set of runs in `runs.jsonl`, so a re-run lists from the
@@ -168,6 +174,9 @@ process gets a typed `OutputRootInUse`. Reporting is read-only and tolerates a
 concurrent writer by skipping incomplete files.
 
 ## Status Machine
+
+> **Superseded by ADR-110.** There is no status machine. The CLI exits `1` on a
+> runtime failure; nothing is persisted.
 
 ```
 pending -> in_progress -> completed
@@ -203,16 +212,17 @@ truncate.
 ## Security
 
 - No `Pat` member in config; no `--pat` flag. `AZDO_PAT` only.
-- Credentials are never logged, persisted, or written to the manifest.
+- Credentials are never logged, persisted, or written to any artifact.
 - No absolute local paths in report output; `SourcePath` is removed from the
   report contract.
-- `lastError` and quarantined manifests must not capture a PAT or absolute path.
+- Error text must not capture a PAT or absolute path.
 - `.gitignore` excludes `build-analytics.config.json`.
 
 ## Resolved Decisions
 
 1. **Retry.** As in Retrieval Rules — 5 attempts, waits 1/2/4/8s; `Retry-After`
-   honored up to 60s, then persist `paused` and exit non-zero with a typed error.
+   honored up to 60s, then stop and exit non-zero with a typed error (nothing is
+   persisted).
 2. **Run cap.** `maxRuns` trims the page budget; whole pages are committed; the
    run is left `paused`, never `completed`.
 3. **Skewed timestamps.** Any strictly reversed endpoint pair yields `null`,
@@ -223,12 +233,10 @@ truncate.
    adapter keeps the seam honest. CSV/JSON and charts are deferred.
 6. **CLI.** Breaking rewrite accepted. Legacy flags are removed outright; no
    migration shim and no deprecation/parity phase.
-7. **Corrupt manifest.** Quarantine to `manifest.corrupt-<utc>-<guid>.json`,
-   re-list from the beginning, and skip only log entries that are
-   `detail`-complete under the active policy.
-8. **Schema version.** `schemaVersion: 1`. Any mismatch (older or newer) is a
-   typed error directing the operator to a new output root. No migration code,
-   and a newer-but-valid manifest is never quarantined as "corrupt".
+7. ~~**Corrupt manifest.**~~ *(superseded by ADR-110: no manifest, no quarantine;
+   the run log is cleared first).*
+8. ~~**Schema version.**~~ *(superseded by ADR-110: a wrong `schemaVersion` in the
+   run log is just a malformed line that is skipped and counted).*
 9. **Rounding.** Domain stores raw seconds. Rounding to 2dp happens only in
    aggregate/report output, using `MidpointRounding.AwayFromZero` (0.125 → 0.13).
    The `>300s` wait threshold compares raw seconds.
@@ -278,22 +286,19 @@ truncate.
 27. **`lastError` sanitization** is owned by the error-capture layer (HTTP
     adapter / pipeline), not the store. The store persists what it is given and
     injects no PAT or absolute path.
-28. **Fingerprint compatibility** is a pure helper,
-    `ManifestCompatibility.EnsureCompatible(manifest, expectedFingerprint, existingRunIds)`,
-    called by the pipeline. It throws `FingerprintMismatchException` only when
-    the run log is non-empty and fingerprints differ. The frozen `IManifestStore` has
-    no fingerprint parameter.
+28. ~~**Fingerprint compatibility**~~ *(superseded by ADR-110: no fingerprint, no
+    manifest, no compatibility check).* The historical rule was a pure
+    `ManifestCompatibility.EnsureCompatible(manifest, expectedFingerprint, existingRunIds)`
+    helper that threw `FingerprintMismatchException` when the run log was non-empty
+    and fingerprints differed.
 
-29. **`Manifest` is a value object too.** It defensively copies `FailedRunIds` /
-    `DefinitionIds` / `DefinitionNames` and implements structural `Equals` /
-    `GetHashCode`, matching `TimingSummary`.
-30. **Read-only manifest access.** `new FileManifestStore(root, faults?)` is the
-    writer and takes the exclusive `manifest.lock` eagerly.
-    `FileManifestStore.OpenReadOnly(root)` takes no lock, so reporting can read
-    while a writer runs; `CommitAsync` on a read-only instance throws.
+29. ~~**`Manifest` is a value object too.**~~ *(superseded by ADR-110: `Manifest` is
+    removed).*
+30. ~~**Read-only manifest access.**~~ *(superseded by ADR-110: `FileManifestStore`
+    and the lock are removed).*
 31. **Pause signal.** The adapter throws `PipelinePausedException(PauseReason)`
-    (`RetryAfterTooLong`, `RunCapReached`, `DetailThrottled`); the pipeline
-    persists `paused` and exits non-zero.
+    (`RetryAfterTooLong`, `RunCapReached`, `DetailThrottled`); the CLI prints the
+    reason and exits non-zero. Nothing is persisted.
 32. **Attempts.** 5 total (1 initial + 4 retries), waits 1/2/4/8s. `Retry-After`
     is consulted only on retryable statuses and delta-seconds wins over HTTP-date;
     60s is allowed, >60s pauses, a past date clamps to 0.
@@ -398,15 +403,11 @@ truncate.
     the response.
 64. **Slice-3 tests** inject `HttpMessageHandler` + `TimeProvider` +
     `IDelayScheduler`; no sockets, no `Task.Delay`.
-65. **Read-only stores never mutate.** On a read-only `FileManifestStore`,
-    `TryReadAsync` returns null for absent or corrupt content and performs **no**
-    quarantine; a valid-but-wrong `schemaVersion` still throws
-    `UnsupportedSchemaVersionException`; an IO failure throws `StorageException`.
-    Quarantine is gated on writer mode, so a reader can never steal the manifest
-    from a concurrent writer.
+65. ~~**Read-only stores never mutate.**~~ *(superseded by ADR-110: `FileManifestStore`
+    is removed; `FileRunStore.ReadAllAsync` only reads).*
 66. **Pipeline location.** `BuildAnalytics.App.Retrieval`: it stamps
     `CreatedAt`/`UpdatedAt`, and ADR-20 forbids a clock in Core. Core keeps the
-    pure helpers (fingerprint, `ManifestCompatibility`, `DetailPolicyEvaluator`).
+    pure helpers (`DetailPolicyEvaluator`).
 67. **Partial-page failures.** A detail 404 skips the run, records its id in
     `FailedRunIds`, and advances the cursor. A storage failure on `WriteAsync`
     aborts with `Failed` and does **not** advance — a checkpoint never advances
@@ -430,12 +431,11 @@ truncate.
     `AdoRequestException` (401/403/409/422), an unexpected exception, or any
     non-404 HTTP error — aborts with `Status = Failed` and does not advance the
     cursor, because such failures usually affect every run.
-74. **Reporting read path.** Reuses `IRunStore` plus a read-only `IManifestStore`
-    (`OpenReadOnly`); no new port. Reporting performs no writes and has no network
-    dependency.
-75. **No completed retrieval.** An absent manifest or `Status != completed`
-    throws a typed `ReportingErrorException` (CLI exits non-zero). A completed
-    root with zero runs yields a valid zero-filled report.
+74. **Reporting read path.** Reuses `IRunStore`; no manifest and no new port.
+    Reporting reads every run from `runs.jsonl`, performs no writes to the log and
+    has no network dependency.
+75. **No completed retrieval required.** There is no manifest: an empty or absent
+    log yields a valid zero-filled report.
 76. **Excel contract.** `Overview` (Metric/Value: Runs, Succeeded, Failed,
     Partially Succeeded, Canceled, Not Started, Wait > 5 Min, and the three
     averages) and `Monthly` (Month + the same columns) — real UTC months
@@ -470,11 +470,8 @@ truncate.
     `Failed` and is never treated as a per-run skip.
 87. **Empty continuation header** means “no token”; a null or whitespace
     `x-ms-continuationtoken` must not be echoed as a real token.
-88. **Fingerprint before short-circuit** (amends ADR-71). Order: read manifest →
-    resolve ids → fingerprint → `ManifestCompatibility.EnsureCompatible` → then,
-    if `completed`, return `ShortCircuited`. A completed root still issues no
-    list calls, but a *different* query on a non-empty root is a typed error
-    rather than a silent no-op.
+88. ~~**Fingerprint before short-circuit**~~ *(superseded by ADR-110: no fingerprint
+    and no short-circuit).*
 89. **Pass-written runs join the skip set** (amends the earlier exclusion, which
     was a regression). After a successful `WriteAsync`, the written run is added
     to the in-memory skip set so a same-pass re-list — e.g. a token restart
@@ -618,8 +615,9 @@ truncate.
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
     `--max-runs`, `--page-size`, `--api-version`, `--quiet`; `report` takes
-    `--output-root` (required), `--out`, `--quiet`. **No config file and no
-    `--config`** — flags plus `AZDO_PAT` only. The PAT is read through an
+    `--output-root` (required), `--out`, `--quiet`. A config file is supported
+    through `--config` / `build-analytics.config.json` (ADR-98) — flags plus
+    `AZDO_PAT` and the optional config only. The PAT is read through an
     injectable credential seam, never a flag, never persisted.
 80. **Exit codes.** `0` success/help, `2` usage/parse error, `1` runtime or typed
     failure (including `paused` and `failed`), `130` on Ctrl+C. `Parse` returns a

@@ -55,9 +55,9 @@ A run that stops halfway leaves a partial log that the next run clears.
 each page to `runs.jsonl`, then reads the log back, summarises it, and writes the
 workbook.
 
-**Progress:** progress goes to stderr — one line per page
-(`Retrieving page 3 - 1,000 builds`) and a final `Generating report...`.
-`--quiet` suppresses it.
+**Progress:** progress goes to stderr — one line per page once that page's
+runs are durable (`Retrieving page 3 - 1,000 builds`) and a final
+`Generating report...`. `--quiet` suppresses it.
 
 ## Report
 

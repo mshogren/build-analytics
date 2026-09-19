@@ -62,7 +62,6 @@ public sealed class RetrievalPipeline(
             }
 
             pagesFetched++;
-            _progress.PageFetched(pagesFetched, page.Runs.Count);
 
             var pageRuns = new List<BuildRun>();
             foreach (var listed in page.Runs)
@@ -95,11 +94,14 @@ public sealed class RetrievalPipeline(
                 runsWritten++;
             }
 
-            // Persist the page durably before moving on.
+            // Persist the page durably before moving on, then announce it. A page is only
+            // reported once its runs are durable; empty pages are still announced.
             if (pageRuns.Count > 0)
             {
                 await runs.AppendAsync(pageRuns, cancellationToken).ConfigureAwait(false);
             }
+
+            _progress.PageFetched(pagesFetched, page.Runs.Count);
 
             var next = page.ContinuationToken;
             if (next is not null && !seenTokens.Add(next))

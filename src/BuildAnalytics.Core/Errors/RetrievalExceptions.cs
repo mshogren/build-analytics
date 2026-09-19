@@ -1,6 +1,6 @@
 namespace BuildAnalytics.Core.Errors;
 
-/// <summary>Why a retrieval run was paused (and can be resumed later).</summary>
+/// <summary>Why a retrieval run stopped early.</summary>
 public enum PauseReason
 {
     RetryAfterTooLong,
@@ -9,9 +9,9 @@ public enum PauseReason
 }
 
 /// <summary>
-/// The adapter asked the pipeline to stop a resumable run: run-cap budget reached,
-/// a server-requested retry delay over 60s, or a throttled detail fetch.
-/// The manifest is persisted as <c>paused</c>, never <c>completed</c>.
+/// The adapter stopped the run: the run-cap budget was reached, the server asked for a
+/// retry delay over 60s, or a detail fetch was throttled. Nothing is persisted; the CLI
+/// prints the reason and exits <c>1</c>.
 /// </summary>
 public sealed class PipelinePausedException : Exception
 {
@@ -44,12 +44,12 @@ public sealed class PipelinePausedException : Exception
     private static string MessageFor(PauseReason reason) => reason switch
     {
         PauseReason.RetryAfterTooLong =>
-            "Retrieval paused: Azure DevOps asked for a retry delay longer than 60s. Rerun to resume.",
+            "Retrieval stopped: Azure DevOps asked for a retry delay longer than 60s.",
         PauseReason.RunCapReached =>
-            "Retrieval paused: the maxRuns budget was reached. Rerun to resume.",
+            "Retrieval stopped: the maxRuns budget was reached.",
         PauseReason.DetailThrottled =>
-            "Retrieval paused: run detail retrieval was throttled. Rerun to resume.",
-        _ => "Retrieval paused."
+            "Retrieval stopped: run detail retrieval was throttled.",
+        _ => "Retrieval stopped."
     };
 }
 
