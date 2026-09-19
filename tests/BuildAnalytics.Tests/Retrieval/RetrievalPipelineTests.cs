@@ -18,8 +18,6 @@ public sealed class RetrievalPipelineTests
 
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
 
-        Assert.Equal(2, result.PagesFetched);
-        Assert.Equal(2, result.RunsWritten);
         Assert.Empty(result.FailedRunIds);
         Assert.Equal([null, "t1"], source.ListCalls.Select(call => call.Token));
         Assert.Equal([1, 2], runs.Writes.Select(run => run.Id));
@@ -51,8 +49,6 @@ public sealed class RetrievalPipelineTests
 
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
 
-        Assert.Equal(3, result.PagesFetched);
-        Assert.Equal(3, result.RunsWritten);
         Assert.Equal(3, source.ListCalls.Count);
         Assert.Equal([null, "t1", "t2"], source.ListCalls.Select(call => call.Token));
         Assert.Equal([1, 2, 3], runs.Writes.Select(run => run.Id));
@@ -66,7 +62,6 @@ public sealed class RetrievalPipelineTests
 
         var result = await pipeline.RunAsync(Query(), CancellationToken.None);
 
-        Assert.Equal(1, result.RunsWritten);
         Assert.Equal([1], runs.Writes.Select(run => run.Id));
         Assert.Equal("first", runs.Get(1)!.BuildNumber);
     }
@@ -127,14 +122,14 @@ public sealed class RetrievalPipelineTests
     }
 
     [Fact]
-    public async Task Paused_exception_propagates()
+    public async Task Stopped_exception_propagates()
     {
         var (pipeline, source, _, _, _) = Create();
-        source.ListThrows(null, new PipelinePausedException(PauseReason.RunCapReached, remainingBudget: 0));
+        source.ListThrows(null, new RetrievalStoppedException(StopReason.RunCapReached, remainingBudget: 0));
 
-        var exception = await Assert.ThrowsAsync<PipelinePausedException>(() => pipeline.RunAsync(Query(), CancellationToken.None));
+        var exception = await Assert.ThrowsAsync<RetrievalStoppedException>(() => pipeline.RunAsync(Query(), CancellationToken.None));
 
-        Assert.Equal(PauseReason.RunCapReached, exception.Reason);
+        Assert.Equal(StopReason.RunCapReached, exception.Reason);
         Assert.Empty(source.DetailCalls);
     }
 

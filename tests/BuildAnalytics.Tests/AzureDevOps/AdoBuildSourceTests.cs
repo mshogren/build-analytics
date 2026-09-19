@@ -71,7 +71,7 @@ public sealed class AdoBuildSourceTests
     [Fact]
     public async Task MaxRuns_trims_top_to_the_remaining_budget()
     {
-        var (source, handler, _, _) = Create(options: new AdoBuildSourceOptions { MaxRuns = 3 });
+        var (source, handler, _, _) = Create(maxRuns: 3);
         handler.EnqueueJson("""{ "value": [ { "id": 1 } ] }""", continuationToken: "next");
 
         await source.ListAsync(Query(), null, default);
@@ -80,37 +80,37 @@ public sealed class AdoBuildSourceTests
     }
 
     [Fact]
-    public async Task Exhausted_budget_pauses_without_a_call()
+    public async Task Exhausted_budget_stops_without_a_call()
     {
-        var (source, handler, _, _) = Create(options: new AdoBuildSourceOptions { MaxRuns = 1 });
+        var (source, handler, _, _) = Create(maxRuns: 1);
         handler.EnqueueJson("""{ "value": [ { "id": 1 } ] }""", continuationToken: "next");
 
         await source.ListAsync(Query(), null, default);
         var countAfterFirstPage = handler.RequestCount;
 
-        var exception = await Assert.ThrowsAsync<PipelinePausedException>(
+        var exception = await Assert.ThrowsAsync<RetrievalStoppedException>(
             () => source.ListAsync(Query(), "next", default));
 
-        Assert.Equal(PauseReason.RunCapReached, exception.Reason);
+        Assert.Equal(StopReason.RunCapReached, exception.Reason);
         Assert.Equal(countAfterFirstPage, handler.RequestCount);
     }
 
     [Fact]
-    public async Task Zero_maxRuns_pauses_before_the_first_call()
+    public async Task Zero_maxRuns_stops_before_the_first_call()
     {
-        var (source, handler, _, _) = Create(options: new AdoBuildSourceOptions { MaxRuns = 0 });
+        var (source, handler, _, _) = Create(maxRuns: 0);
 
-        var exception = await Assert.ThrowsAsync<PipelinePausedException>(
+        var exception = await Assert.ThrowsAsync<RetrievalStoppedException>(
             () => source.ListAsync(Query(), null, default));
 
-        Assert.Equal(PauseReason.RunCapReached, exception.Reason);
+        Assert.Equal(StopReason.RunCapReached, exception.Reason);
         Assert.Equal(0, handler.RequestCount);
     }
 
     [Fact]
     public async Task Negative_maxRuns_is_rejected()
     {
-        var (source, _, _, _) = Create(options: new AdoBuildSourceOptions { MaxRuns = -1 });
+        var (source, _, _, _) = Create(maxRuns: -1);
 
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
             () => source.ListAsync(Query(), null, default));
@@ -187,12 +187,12 @@ public sealed class AdoBuildSourceTests
             "7.1");
 
     private static (AdoBuildSource Source, ScriptedHttpMessageHandler Handler, FakeDelayScheduler Delays, FakeTimeProvider Clock) Create(
-        AdoBuildSourceOptions? options = null)
+        int maxRuns = int.MaxValue)
     {
         var handler = new ScriptedHttpMessageHandler();
         var delays = new FakeDelayScheduler();
         var clock = new FakeTimeProvider { UtcNow = ClockNow };
-        var source = new AdoBuildSource(handler, clock, delays, options);
+        var source = new AdoBuildSource(handler, clock, delays, maxRuns);
         return (source, handler, delays, clock);
     }
 }

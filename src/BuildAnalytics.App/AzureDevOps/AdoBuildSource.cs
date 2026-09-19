@@ -20,7 +20,7 @@ public sealed class AdoBuildSource : IBuildSource, IDisposable
 
     private readonly HttpClient _httpClient;
     private readonly AdoRequestExecutor _executor;
-    private readonly AdoBuildSourceOptions _options;
+    private readonly int _maxRuns;
     private readonly TimeProvider _timeProvider;
 
     private int _fetched;
@@ -29,7 +29,7 @@ public sealed class AdoBuildSource : IBuildSource, IDisposable
         HttpMessageHandler httpMessageHandler,
         TimeProvider timeProvider,
         IDelayScheduler delayScheduler,
-        AdoBuildSourceOptions? options = null)
+        int maxRuns = int.MaxValue)
     {
         ArgumentNullException.ThrowIfNull(httpMessageHandler);
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -37,7 +37,7 @@ public sealed class AdoBuildSource : IBuildSource, IDisposable
         _httpClient = new HttpClient(httpMessageHandler, disposeHandler: false);
         _executor = new AdoRequestExecutor(_httpClient, delayScheduler, timeProvider);
         _timeProvider = timeProvider;
-        _options = options ?? new AdoBuildSourceOptions();
+        _maxRuns = maxRuns;
     }
 
     /// <summary>Disposes the internal <see cref="HttpClient"/>; the injected handler stays caller-owned.</summary>
@@ -52,9 +52,9 @@ public sealed class AdoBuildSource : IBuildSource, IDisposable
             _fetched = 0;
         }
 
-        var remaining = _options.MaxRuns - _fetched;
+        var remaining = _maxRuns - _fetched;
         var top = AdoPageBudget.TrimTop(PageSize, remaining)
-            ?? throw new PipelinePausedException(PauseReason.RunCapReached, remainingBudget: remaining);
+            ?? throw new RetrievalStoppedException(StopReason.RunCapReached, remainingBudget: remaining);
 
         var path = AdoUrlBuilder.ListPath(query.Project);
         var uri = AdoUrlBuilder.ListUri(query, top, continuationToken);

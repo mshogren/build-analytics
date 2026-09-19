@@ -83,10 +83,7 @@ public sealed class CliApplication
             OutputCleaner.Clear(options.OutputRoot, options.OutputPath);
 
             using var authHandler = new PatAuthHandler(pat) { InnerHandler = _handlers.Create() };
-            using var source = new AdoBuildSource(authHandler, _clock, _delay, new AdoBuildSourceOptions
-            {
-                MaxRuns = options.MaxRuns
-            });
+            using var source = new AdoBuildSource(authHandler, _clock, _delay, options.MaxRuns);
 
             var runStore = new FileRunStore(options.OutputRoot, new PhysicalFileOperations());
             IRetrievalProgress progress = options.Quiet
@@ -115,7 +112,7 @@ public sealed class CliApplication
 
             return 0;
         }
-        catch (PipelinePausedException exception)
+        catch (RetrievalStoppedException exception)
         {
             _console.WriteError(Describe(exception));
             return 1;
@@ -132,8 +129,8 @@ public sealed class CliApplication
         }
     }
 
-    /// <summary>ADR-62: surfaces the structured pause fields, never the persisted-text style.</summary>
-    private static string Describe(PipelinePausedException exception)
+    /// <summary>ADR-62: surfaces the structured stop fields, never a persisted-text style.</summary>
+    private static string Describe(RetrievalStoppedException exception)
     {
         var details = new List<string> { $"reason={exception.Reason}" };
         if (exception.RetryAfter is { } retryAfter)
@@ -146,6 +143,6 @@ public sealed class CliApplication
             details.Add($"remainingBudget={remainingBudget}");
         }
 
-        return $"Retrieval paused ({string.Join(", ", details)}).";
+        return $"Retrieval stopped ({string.Join(", ", details)}).";
     }
 }

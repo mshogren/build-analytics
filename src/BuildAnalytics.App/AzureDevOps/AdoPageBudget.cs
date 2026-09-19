@@ -8,7 +8,7 @@ public static class AdoPageBudget
 {
     /// <summary>
     /// Returns the effective <c>$top</c> for the next page, or <c>null</c> when the
-    /// budget is exhausted (pause with no call).
+    /// budget is exhausted (stop with no call).
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">The remaining budget is negative.</exception>
     public static int? TrimTop(int pageSize, int remaining)

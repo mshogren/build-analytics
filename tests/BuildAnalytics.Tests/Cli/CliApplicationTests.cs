@@ -68,7 +68,7 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
-    public async Task Run_paused_returns_1_and_surfaces_the_pause_reason()
+    public async Task Run_stopped_returns_1_and_surfaces_the_stop_reason()
     {
         using var root = new TempOutputRoot();
         var handler = new ScriptedHttpMessageHandler();
@@ -87,7 +87,7 @@ public sealed class CliApplicationTests
 
         Assert.Equal(1, code);
         var error = string.Join("\n", console.Stderr);
-        Assert.Contains("paused", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("stopped", error, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("RetryAfterTooLong", error, StringComparison.Ordinal);
         Assert.Contains("retryAfter", error, StringComparison.Ordinal);
         Assert.DoesNotContain("Generating report...", error, StringComparison.Ordinal);

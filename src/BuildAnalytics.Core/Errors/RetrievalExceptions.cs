@@ -1,7 +1,7 @@
 namespace BuildAnalytics.Core.Errors;
 
 /// <summary>Why a retrieval run stopped early.</summary>
-public enum PauseReason
+public enum StopReason
 {
     RetryAfterTooLong,
     RunCapReached,
@@ -13,19 +13,19 @@ public enum PauseReason
 /// retry delay over 60s, or a detail fetch was throttled. Nothing is persisted; the CLI
 /// prints the reason and exits <c>1</c>.
 /// </summary>
-public sealed class PipelinePausedException : Exception
+public sealed class RetrievalStoppedException : Exception
 {
-    public PipelinePausedException(PauseReason reason)
+    public RetrievalStoppedException(StopReason reason)
         : this(reason, retryAfter: null, remainingBudget: null, innerException: null)
     {
     }
 
-    public PipelinePausedException(PauseReason reason, Exception? innerException)
+    public RetrievalStoppedException(StopReason reason, Exception? innerException)
         : this(reason, retryAfter: null, remainingBudget: null, innerException)
     {
     }
 
-    public PipelinePausedException(PauseReason reason, TimeSpan? retryAfter = null, int? remainingBudget = null, Exception? innerException = null)
+    public RetrievalStoppedException(StopReason reason, TimeSpan? retryAfter = null, int? remainingBudget = null, Exception? innerException = null)
         : base(MessageFor(reason), innerException)
     {
         Reason = reason;
@@ -33,21 +33,21 @@ public sealed class PipelinePausedException : Exception
         RemainingBudget = remainingBudget;
     }
 
-    public PauseReason Reason { get; }
+    public StopReason Reason { get; }
 
-    /// <summary>Server-requested wait for <see cref="PauseReason.RetryAfterTooLong"/>.</summary>
+    /// <summary>Server-requested wait for <see cref="StopReason.RetryAfterTooLong"/>.</summary>
     public TimeSpan? RetryAfter { get; }
 
-    /// <summary>Remaining run budget for <see cref="PauseReason.RunCapReached"/>.</summary>
+    /// <summary>Remaining run budget for <see cref="StopReason.RunCapReached"/>.</summary>
     public int? RemainingBudget { get; }
 
-    private static string MessageFor(PauseReason reason) => reason switch
+    private static string MessageFor(StopReason reason) => reason switch
     {
-        PauseReason.RetryAfterTooLong =>
+        StopReason.RetryAfterTooLong =>
             "Retrieval stopped: Azure DevOps asked for a retry delay longer than 60s.",
-        PauseReason.RunCapReached =>
+        StopReason.RunCapReached =>
             "Retrieval stopped: the maxRuns budget was reached.",
-        PauseReason.DetailThrottled =>
+        StopReason.DetailThrottled =>
             "Retrieval stopped: run detail retrieval was throttled.",
         _ => "Retrieval stopped."
     };

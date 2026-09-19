@@ -20,7 +20,7 @@ public static class CliErrorText
                 or RetryExhaustedException
                 or InvalidContinuationTokenException
                 or InvalidDetailPayloadException
-                or PipelinePausedException => exception.Message,
+                or RetrievalStoppedException => exception.Message,
             StorageException => "A storage failure occurred.",
             _ => $"Unexpected failure: {exception.GetType().Name}."
         };

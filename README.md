@@ -128,7 +128,7 @@ resume or incremental mode — every run re-lists the full history.
 | Code | Meaning |
 |---|---|
 | `0` | Success (retrieval and report both completed) |
-| `1` | Runtime failure (including a paused retrieval) |
+| `1` | Runtime failure (including a stopped retrieval) |
 | `2` | Usage error (unknown flag, missing or invalid value) |
 | `130` | Cancelled with Ctrl+C |
 

@@ -5,8 +5,8 @@ using BuildAnalytics.Core.Query;
 
 namespace BuildAnalytics.App.Retrieval;
 
-/// <summary>Outcome of one retrieval pass. <see cref="FailedRunIds"/> are list-time 404s skipped this pass.</summary>
-public sealed record RetrievalResult(int PagesFetched, int RunsWritten, IReadOnlyList<int> FailedRunIds);
+/// <summary>Outcome of one retrieval pass: the ids of list-time 404s that were skipped.</summary>
+public sealed record RetrievalResult(IReadOnlyList<int> FailedRunIds);
 
 /// <summary>
 /// List (paging from the beginning) -> detail-if-needed -> durable append (ADR-110).
@@ -128,6 +128,6 @@ public sealed class RetrievalPipeline(
         }
 
         _progress.Completed(pagesFetched, runsWritten);
-        return new RetrievalResult(pagesFetched, runsWritten, failedRunIds.ToArray());
+        return new RetrievalResult(failedRunIds.ToArray());
     }
 }

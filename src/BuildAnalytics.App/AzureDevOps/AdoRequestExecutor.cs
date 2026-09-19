@@ -106,14 +106,14 @@ public sealed class AdoRequestExecutor
 
                     if (retryAfter is { } wait && wait > MaxRetryAfter)
                     {
-                        throw new PipelinePausedException(PauseReason.RetryAfterTooLong, retryAfter: wait);
+                        throw new RetrievalStoppedException(StopReason.RetryAfterTooLong, retryAfter: wait);
                     }
 
                     if (attempt == MaxAttempts)
                     {
                         if (kind == AdoRequestKind.Detail && response.StatusCode == HttpStatusCode.TooManyRequests)
                         {
-                            throw new PipelinePausedException(PauseReason.DetailThrottled);
+                            throw new RetrievalStoppedException(StopReason.DetailThrottled);
                         }
 
                         throw new RetryExhaustedException(attempt, requestPath, status, ReadCorrelationId(response), lastTransient);

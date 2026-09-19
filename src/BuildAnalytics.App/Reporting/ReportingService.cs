@@ -4,8 +4,8 @@ using BuildAnalytics.Core.Timing;
 
 namespace BuildAnalytics.App.Reporting;
 
-/// <summary>Report produced from the local run log plus how it was assembled.</summary>
-public sealed record ReportingResult(TimingReport Report, int RunsRead, int CorruptSkipped);
+/// <summary>How the report was assembled: runs read and malformed log lines skipped.</summary>
+public sealed record ReportingResult(int RunsRead, int CorruptSkipped);
 
 /// <summary>
 /// Offline reporting (ADR-74..77, ADR-110): reads every run from the append-only log,
@@ -25,6 +25,6 @@ public sealed class ReportingService(
         var report = new TimingReport(summary, loaded);
         await writer.WriteAsync(report, cancellationToken).ConfigureAwait(false);
 
-        return new ReportingResult(report, loaded.Count, read.MalformedLineCount);
+        return new ReportingResult(loaded.Count, read.MalformedLineCount);
     }
 }

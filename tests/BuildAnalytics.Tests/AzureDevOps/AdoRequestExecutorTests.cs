@@ -216,15 +216,15 @@ public sealed class AdoRequestExecutorTests
     }
 
     [Fact]
-    public async Task RetryAfter_over_sixty_seconds_pauses()
+    public async Task RetryAfter_over_sixty_seconds_stops()
     {
         var (executor, handler, delays) = Create();
         handler.EnqueueStatus(HttpStatusCode.ServiceUnavailable, retryAfter: "61");
 
-        var exception = await Assert.ThrowsAsync<PipelinePausedException>(
+        var exception = await Assert.ThrowsAsync<RetrievalStoppedException>(
             () => executor.SendAsync(Factory, "/project/_apis/build/builds", AdoRequestKind.List, null, null, default));
 
-        Assert.Equal(PauseReason.RetryAfterTooLong, exception.Reason);
+        Assert.Equal(StopReason.RetryAfterTooLong, exception.Reason);
         Assert.Equal(TimeSpan.FromSeconds(61), exception.RetryAfter);
         Assert.Empty(delays.Delays);
         Assert.Equal(1, handler.RequestCount);
@@ -255,7 +255,7 @@ public sealed class AdoRequestExecutorTests
     }
 
     [Fact]
-    public async Task Detail_throttle_retries_then_pauses_on_exhaustion()
+    public async Task Detail_throttle_retries_then_stops_on_exhaustion()
     {
         var (executor, handler, delays) = Create();
         for (var i = 0; i < AdoRequestExecutor.MaxAttempts; i++)
@@ -263,10 +263,10 @@ public sealed class AdoRequestExecutorTests
             handler.EnqueueStatus(HttpStatusCode.TooManyRequests);
         }
 
-        var exception = await Assert.ThrowsAsync<PipelinePausedException>(
+        var exception = await Assert.ThrowsAsync<RetrievalStoppedException>(
             () => executor.SendAsync(Factory, "/project/_apis/build/builds/42", AdoRequestKind.Detail, 42, null, default));
 
-        Assert.Equal(PauseReason.DetailThrottled, exception.Reason);
+        Assert.Equal(StopReason.DetailThrottled, exception.Reason);
         Assert.Equal([1, 2, 4, 8], delays.Delays.Select(delay => delay.TotalSeconds));
         Assert.Equal(AdoRequestExecutor.MaxAttempts, handler.RequestCount);
     }
@@ -285,15 +285,15 @@ public sealed class AdoRequestExecutorTests
     }
 
     [Fact]
-    public async Task Detail_throttle_with_a_long_retry_after_pauses_immediately()
+    public async Task Detail_throttle_with_a_long_retry_after_stops_immediately()
     {
         var (executor, handler, delays) = Create();
         handler.EnqueueStatus(HttpStatusCode.TooManyRequests, retryAfter: "61");
 
-        var exception = await Assert.ThrowsAsync<PipelinePausedException>(
+        var exception = await Assert.ThrowsAsync<RetrievalStoppedException>(
             () => executor.SendAsync(Factory, "/project/_apis/build/builds/42", AdoRequestKind.Detail, 42, null, default));
 
-        Assert.Equal(PauseReason.RetryAfterTooLong, exception.Reason);
+        Assert.Equal(StopReason.RetryAfterTooLong, exception.Reason);
         Assert.Equal(TimeSpan.FromSeconds(61), exception.RetryAfter);
         Assert.Empty(delays.Delays);
         Assert.Equal(1, handler.RequestCount);

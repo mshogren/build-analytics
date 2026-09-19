@@ -24,10 +24,9 @@ public sealed class ReportingServiceTests
 
         Assert.Equal(0, result.RunsRead);
         Assert.Equal(0, result.CorruptSkipped);
-        Assert.Equal(0, result.Report.Summary.Overall.RunCount);
-        Assert.Empty(result.Report.Summary.Months);
-        Assert.NotNull(writer.Report!.Summary);
-        Assert.Equal(result.Report.Summary, writer.Report!.Summary);
+        Assert.Equal(0, writer.Report!.Summary.Overall.RunCount);
+        Assert.Empty(writer.Report.Summary.Months);
+        Assert.NotNull(writer.Report.Summary);
     }
 
     [Fact]
@@ -74,16 +73,15 @@ public sealed class ReportingServiceTests
 
         Assert.Equal(3, result.RunsRead);
         Assert.Equal(0, result.CorruptSkipped);
-        Assert.Equal(3, result.Report.Summary.Overall.RunCount);
-        Assert.Equal(2, result.Report.Summary.Overall.SucceededCount);
-        Assert.Equal(1, result.Report.Summary.Overall.FailedCount);
-        Assert.Equal(result.Report.Summary, writer.Report!.Summary);
+        Assert.Equal(3, writer.Report!.Summary.Overall.RunCount);
+        Assert.Equal(2, writer.Report.Summary.Overall.SucceededCount);
+        Assert.Equal(1, writer.Report.Summary.Overall.FailedCount);
     }
 
     [Fact]
     public async Task Corrupt_run_is_skipped_and_counted_without_aborting()
     {
-        var (service, runs, _) = Create();
+        var (service, runs, writer) = Create();
         runs.Put(Run(1, "succeeded"));
         runs.Seed(2);
         runs.Malformed.Add(2);
@@ -92,9 +90,9 @@ public sealed class ReportingServiceTests
 
         Assert.Equal(1, result.RunsRead);
         Assert.Equal(1, result.CorruptSkipped);
-        Assert.Equal(1, result.Report.Summary.Overall.RunCount);
-        Assert.Single(result.Report.Runs);
-        Assert.Equal(1, result.Report.Runs[0].Id);
+        Assert.Equal(1, writer.Report!.Summary.Overall.RunCount);
+        Assert.Single(writer.Report.Runs);
+        Assert.Equal(1, writer.Report.Runs[0].Id);
     }
 
     [Fact]

@@ -202,7 +202,7 @@ truncate.
 - A detail-fetch throttle aborts the whole run, not just that run.
 - `maxRuns` is a runtime budget applied by trimming the page budget,
   `$top = min(pageSize, remaining)`, so overshoot is bounded. It aborts with a
-  typed error (the `Paused` type is kept only as the carrier of the reason).
+  typed error (the `RetrievalStoppedException` type carries the reason).
 - An invalid/expired continuation token restarts the listing once from the
   beginning; ids already handled in the pass are not re-appended or re-fetched.
 - ~~A re-run against a `completed` root refreshes and stops early.~~ Removed by
@@ -224,8 +224,8 @@ truncate.
 1. **Retry.** As in Retrieval Rules — 5 attempts, waits 1/2/4/8s; `Retry-After`
    honored up to 60s, then stop and exit non-zero with a typed error (nothing is
    persisted).
-2. **Run cap.** `maxRuns` trims the page budget; whole pages are committed; the
-   run is left `paused`, never `completed`.
+2. **Run cap.** `maxRuns` trims the page budget; when it is exhausted, retrieval
+   stops with `RetrievalStoppedException(RunCapReached)`.
 3. **Skewed timestamps.** Any strictly reversed endpoint pair yields `null`,
    never negative. Equal endpoints yield `0.0`.
 4. **Summary scope.** Duration columns are expressed in **seconds** (no
@@ -297,12 +297,12 @@ truncate.
     removed).*
 30. ~~**Read-only manifest access.**~~ *(superseded by ADR-110: `FileManifestStore`
     and the lock are removed).*
-31. **Pause signal.** The adapter throws `PipelinePausedException(PauseReason)`
+31. **Stop signal.** The adapter throws `RetrievalStoppedException(StopReason)`
     (`RetryAfterTooLong`, `RunCapReached`, `DetailThrottled`); the CLI prints the
     reason and exits non-zero. Nothing is persisted.
 32. **Attempts.** 5 total (1 initial + 4 retries), waits 1/2/4/8s. `Retry-After`
     is consulted only on retryable statuses and delta-seconds wins over HTTP-date;
-    60s is allowed, >60s pauses, a past date clamps to 0.
+    60s is allowed, >60s stops, a past date clamps to 0.
 33. **Retryable failures.** `HttpRequestException`, `IOException`,
     `SocketException`, and timeout `OperationCanceledException` (caller token not
     cancelled). A cancelled caller token is rethrown, never retried.
@@ -311,7 +311,7 @@ truncate.
     or when a `completed` run is missing any timestamp. `buildNumber`, `reason`,
     `poolId`, `poolName`, `sourceBranch` never trigger detail.
 35. **`maxRuns` trimming** is owned by the adapter: `$top = max(1, min(pageSize,
-    remaining))`; `0` pauses with no call; negative is rejected.
+    remaining))`; `0` stops with no call; negative is rejected.
 36. **Invalid continuation token** throws `InvalidContinuationTokenException`
     (also for a repeated token); the adapter does not restart — the pipeline
     restarts from `cursor=null` and upserts.
@@ -360,10 +360,10 @@ truncate.
 51. **`Retry-After` replaces** the scheduled backoff for that attempt; a value
     below the schedule still wins, and a negative/past value clamps to 0
     (retry immediately). With no `Retry-After`, the 1/2/4/8 schedule applies.
-52. **60s boundary.** Exactly 60.000s is allowed; only strictly >60s pauses.
+52. **60s boundary.** Exactly 60.000s is allowed; only strictly >60s stops.
 53. **Detail throttle.** A 429 on a detail fetch retries per policy; on
-    exhaustion it throws `PipelinePausedException(DetailThrottled)` so the whole
-    pipeline pauses rather than skipping the run. A >60s `Retry-After` pauses
+    exhaustion it throws `RetrievalStoppedException(DetailThrottled)` so the whole
+    run stops rather than skipping the run. A >60s `Retry-After` stops
     immediately with `RetryAfterTooLong`.
 54. **Timeout vs cancellation.** Classify using the caller token's
     `IsCancellationRequested`: if cancelled, rethrow and never retry; otherwise a
@@ -384,22 +384,20 @@ truncate.
     blank `definitionName`/`status`/`result` counts as missing.
 59. **`maxRuns`.** Default page size 1000; `$top = max(1, min(pageSize, remaining))`
     on every page; when remaining reaches 0 the next call throws
-    `PipelinePausedException(RunCapReached)` with no HTTP call; `0` pauses on the
+    `RetrievalStoppedException(RunCapReached)` with no HTTP call; `0` stops on the
     first call; negative throws `ArgumentOutOfRangeException`.
 60. **`IDefinitionResolver.ResolveAsync(BuildQuery query, IReadOnlyList<string> patterns, CancellationToken cancellationToken)`**
     returns definition ids only (union, sorted, distinct); the caller passes the
     patterns explicitly (typically from `BuildQuery.DefinitionNames`). `DetailPolicyEvaluator.NeedsDetail(BuildRun run, DetailPolicy policy)`
-    is the pure Core predicate. `PipelinePausedException` exposes `PauseReason Reason`,
+    is the pure Core predicate. `RetrievalStoppedException` exposes `StopReason Reason`,
     `TimeSpan? RetryAfter`, `int? RemainingBudget`.
 61. **Error sanitization.** Message = status + relative path (no host, no query)
     + request id from `x-ms-request-id`, else `x-vss-activity-id`, else
     `x-ms-correlation-request-id`. Never the body or the PAT.
-62. **`PipelinePausedException`** carries `Reason` plus optional `RetryAfter` /
-    `RemainingBudget`. The pipeline catches it, persists `Manifest.Status = Paused`,
-    and **returns** rather than rethrowing. The typed values are surfaced on
-    `RetrievalResult` as `PauseReason? Pause`, `TimeSpan? RetryAfter`, and
-    `int? RemainingBudget` (never parsed back out of `lastError` text), and the
-    CLI maps a non-`completed` status to a non-zero exit.
+62. **`RetrievalStoppedException`** carries `Reason` plus optional `RetryAfter` /
+    `RemainingBudget`. The CLI prints the reason and exits non-zero.
+    *(The old behaviour of persisting `Manifest.Status = Paused` and returning the
+    values on `RetrievalResult` is superseded by ADR-110.)*
 63. **Stamping** always uses the injected clock; `FetchedAt` is never taken from
     the response.
 64. **Slice-3 tests** inject `HttpMessageHandler` + `TimeProvider` +
@@ -504,12 +502,11 @@ truncate.
     file **name** and the reason — never the absolute destination path. The
     ADR-94 CLI catch remains a second sanitization layer.
 96. **Progress reporting.** `RetrievalPipeline` takes an optional
-    `IRetrievalProgress` (no-op by default) and reports a start line, one line per
-    page, a percentage tick at each 5% boundary, invalid-token restarts, pauses,
-    and completion. The percentage is `(on-disk baseline + handled this pass) /
-    TotalCount`, where `TotalCount` comes from the ADO `count` field (`BuildPage`
-    gains `int? TotalCount`); without a count, page/run lines only. Progress goes
-    to stderr and `--quiet` suppresses it; there are no per-detail lines.
+    `IRetrievalProgress` (no-op by default) and reports page lines (emitted after
+    each durable append), invalid-token restarts, and completion; the CLI also
+    emits `Generating report...` before reporting. Progress goes to stderr and
+    `--quiet` suppresses it; there are no percentages and no per-detail lines.
+    *(This superseded the earlier 5% tick design.)*
 97. **Incremental refresh is the default.** A `completed` manifest no longer
     short-circuits. A re-run re-lists from `cursor=null`, skips runs already on
     disk (ADR-78), writes the new ones, and **stops early once a page adds no new
@@ -621,7 +618,7 @@ truncate.
     `AZDO_PAT` and the optional config only. The PAT is read through an
     injectable credential seam, never a flag, never persisted.
 80. **Exit codes.** `0` success/help, `2` usage/parse error, `1` runtime or typed
-    failure (including `paused` and `failed`), `130` on Ctrl+C. `Parse` returns a
+    failure (including a stopped retrieval), `130` on Ctrl+C. `Parse` returns a
     result; only `Main` maps it to an exit code — no `Environment.Exit` in parsing.
 81. **CLI defaults.** `--detail` defaults to `ListOnly`; API version `7.1` (an
     identity input); page size 1000; report `--out` defaults to
@@ -685,7 +682,7 @@ durability across reopen; fingerprint scoping; status machine;
 single-writer lock; no credentials or absolute paths in artifacts.
 
 **C — retry/backoff.** Deterministic waits 1/2/4/8s; both `Retry-After` forms;
-abort to `paused` over 60s; transient retried / permanent fails fast; exhaustion
+abort to `stopped` over 60s; transient retried / permanent fails fast; exhaustion
 throws typed error; cancellation mid-backoff stops; retried detail fetch idempotent.
 
 **D — timing (pure).** Durations as raw seconds; missing/skewed → null; equal →
