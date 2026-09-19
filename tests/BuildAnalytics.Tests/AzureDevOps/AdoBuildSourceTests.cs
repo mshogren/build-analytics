@@ -68,6 +68,19 @@ public sealed class AdoBuildSourceTests
     }
 
     [Fact]
+    public async Task List_surfaces_a_not_found_as_an_error_rather_than_an_empty_page()
+    {
+        var (source, handler, _, _) = Create();
+        handler.EnqueueStatus(HttpStatusCode.NotFound, requestId: "corr-1");
+
+        var exception = await Assert.ThrowsAsync<AdoRequestException>(
+            () => source.ListAsync(Query(), null, default));
+
+        Assert.Equal(404, exception.StatusCode);
+        Assert.Equal(1, handler.RequestCount);
+    }
+
+    [Fact]
     public async Task MaxRuns_trims_top_to_the_remaining_budget()
     {
         var (source, handler, _, _) = Create(maxRuns: 3);

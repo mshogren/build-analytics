@@ -86,6 +86,7 @@ public sealed class CliParserTests
     [InlineData("--page-size")]
     [InlineData("--definition-id")]
     [InlineData("--pat")]
+    [InlineData("--detail")]
     public void Verbs_and_legacy_flags_are_usage_errors(string token)
     {
         Assert.True(CliParser.Parse([token, "x"]).IsError);

@@ -90,6 +90,20 @@ public sealed class AdoRequestExecutorTests
     }
 
     [Fact]
+    public async Task NotFound_status_fails_fast_without_retry()
+    {
+        var (executor, handler, delays) = Create();
+        handler.EnqueueStatus(HttpStatusCode.NotFound, requestId: "corr-1");
+
+        var exception = await Assert.ThrowsAsync<AdoRequestException>(
+            () => executor.SendAsync(Factory, "/project/_apis/build/builds", null, default));
+
+        Assert.Equal(404, exception.StatusCode);
+        Assert.Empty(delays.Delays);
+        Assert.Equal(1, handler.RequestCount);
+    }
+
+    [Fact]
     public async Task Correlation_id_priority_request_id_activity_then_correlation()
     {
         var (executor, handler, _) = Create();
@@ -341,6 +355,7 @@ public sealed class AdoRequestExecutorTests
     {
         using var cts = new CancellationTokenSource();
         var (executor, handler, delays) = Create();
+        delays.ThrowWhenCancelled = false;
         handler.Enqueue(_ =>
         {
             cts.Cancel();

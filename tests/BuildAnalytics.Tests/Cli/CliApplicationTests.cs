@@ -168,7 +168,25 @@ public sealed class CliApplicationTests
 
         Assert.Equal(2, code);
         Assert.Contains("--org", string.Join("\n", console.Stderr), StringComparison.Ordinal);
+        Assert.DoesNotContain("--detail", string.Join("\n", console.Stderr), StringComparison.Ordinal);
         Assert.Empty(console.Stdout);
+    }
+
+    [Fact]
+    public async Task Run_writes_the_completion_line_with_the_read_and_corrupt_counts()
+    {
+        using var root = new TempOutputRoot();
+        var console = new CapturingConsole();
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueJson("""{ "count": 1, "value": [ { "id": 7, "status": "completed", "result": "succeeded" } ] }""");
+        var app = new CliApplication(new FakeCredentialProvider("secret"), console, new CountingHandlerFactory(() => handler), delay: new FakeDelayScheduler());
+
+        var code = await app.RunAsync(
+            ["--org", "https://dev.azure.com/org", "--project", "p", "--output-root", root.Path],
+            CancellationToken.None);
+
+        Assert.Equal(0, code);
+        Assert.Contains("Report complete: 1 run(s) read, 0 corrupt skipped.", string.Join("\n", console.Stderr), StringComparison.Ordinal);
     }
 
     [Fact]

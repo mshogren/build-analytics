@@ -102,9 +102,19 @@ internal sealed class FakeDelayScheduler : IDelayScheduler
 {
     public List<TimeSpan> Delays { get; } = [];
 
+    /// <summary>
+    /// When false, a cancelled token no longer prevents the delay from being recorded, so a retry
+    /// attempted after cancellation is observable instead of being masked by this double.
+    /// </summary>
+    public bool ThrowWhenCancelled { get; set; } = true;
+
     public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        if (ThrowWhenCancelled)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
         Delays.Add(delay);
         return Task.CompletedTask;
     }

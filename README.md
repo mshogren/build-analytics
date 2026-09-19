@@ -131,5 +131,5 @@ resume or incremental mode — every run re-lists the full history.
 
 ## Design
 
-See [`PLAN.md`](PLAN.md) for the architecture and the numbered decisions
-(ADRs) behind the retrieval, storage, reporting, and CLI behaviour.
+See [`PLAN.md`](PLAN.md) for the architecture and the design decisions behind the
+retrieval, storage, reporting, and CLI behaviour.
