@@ -624,7 +624,10 @@ caller's list by reference — they are not value objects (no structural equalit
 and their producers do not mutate them; the workbook's Excel **runtime** behaviour is
 unverified in this environment — `SUMIFS`/`AVERAGEIFS` with the `""` blank criterion
 for the `(unknown)` month and the `SUBTOTAL(103,$A<row>)` visibility helper use
-standard Excel semantics but cannot be executed here.
+standard Excel semantics but cannot be executed here; a **malformed** run-log line blocks
+compaction indefinitely (it is counted and never dropped, by design) — safe, since
+readers skip and count it and the manifest still commits, but the log never compacts
+while such a line is present.
 
 ## Design Review Disposition (F1–F17)
 
