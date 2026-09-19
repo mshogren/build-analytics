@@ -19,7 +19,6 @@ public static class CliErrorText
                 or AdoRequestException
                 or RetryExhaustedException
                 or InvalidContinuationTokenException
-                or InvalidDetailPayloadException
                 or RetrievalStoppedException => exception.Message,
             StorageException => "A storage failure occurred.",
             _ => $"Unexpected failure: {exception.GetType().Name}."

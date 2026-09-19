@@ -12,14 +12,13 @@ namespace BuildAnalytics.App.AzureDevOps;
 public static class AdoJsonMapper
 {
     /// <summary>Maps one build object. A missing/non-positive <c>id</c> yields <c>Id = 0</c>.</summary>
-    public static BuildRun MapBuild(JsonElement element, RunSource source, DateTimeOffset fetchedAt)
+    public static BuildRun MapBuild(JsonElement element, DateTimeOffset fetchedAt)
     {
         var definition = Nested(element, "definition");
         var pool = Nested(Nested(element, "queue"), "pool");
 
         return new BuildRun(
             SchemaVersion: BuildRun.CurrentSchemaVersion,
-            Source: source,
             FetchedAt: fetchedAt,
             Id: GetInt(element, "id") ?? 0,
             DefinitionId: GetInt(definition, "id"),

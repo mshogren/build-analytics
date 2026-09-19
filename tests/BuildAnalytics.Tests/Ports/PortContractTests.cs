@@ -12,7 +12,6 @@ public sealed class PortContractTests
     public void Ports_ExposeExactAsyncSignatures()
     {
         AssertMethod(typeof(IBuildSource), "ListAsync", typeof(Task<BuildPage>), typeof(BuildQuery), typeof(string), typeof(CancellationToken));
-        AssertMethod(typeof(IBuildSource), "GetDetailAsync", typeof(Task<BuildRun>), typeof(BuildQuery), typeof(int), typeof(CancellationToken));
         AssertMethod(typeof(IRunStore), "ReadAllAsync", typeof(Task<RunReadResult>), typeof(CancellationToken));
         AssertMethod(typeof(IRunStore), "AppendAsync", typeof(Task), typeof(IReadOnlyList<BuildRun>), typeof(CancellationToken));
         AssertMethod(typeof(ITimingReportWriter), "WriteAsync", typeof(Task), typeof(TimingReport), typeof(CancellationToken));

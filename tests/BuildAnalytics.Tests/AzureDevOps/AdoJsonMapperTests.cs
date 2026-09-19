@@ -35,10 +35,9 @@ public sealed class AdoJsonMapperTests
         using var document = JsonDocument.Parse(FullBuildJson);
         var fetchedAt = new DateTimeOffset(2024, 6, 1, 12, 0, 0, TimeSpan.Zero);
 
-        var run = AdoJsonMapper.MapBuild(document.RootElement, RunSource.List, fetchedAt);
+        var run = AdoJsonMapper.MapBuild(document.RootElement, fetchedAt);
 
         Assert.Equal(1, run.SchemaVersion);
-        Assert.Equal(RunSource.List, run.Source);
         Assert.Equal(fetchedAt, run.FetchedAt);
         Assert.Equal(42, run.Id);
         Assert.Equal(7, run.DefinitionId);
@@ -60,7 +59,7 @@ public sealed class AdoJsonMapperTests
     {
         using var document = JsonDocument.Parse("""{ "id": 1 }""");
 
-        var run = AdoJsonMapper.MapBuild(document.RootElement, RunSource.Detail, TestRuns.FetchedAt);
+        var run = AdoJsonMapper.MapBuild(document.RootElement, TestRuns.FetchedAt);
 
         Assert.Equal(1, run.Id);
         Assert.Null(run.DefinitionId);

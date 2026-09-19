@@ -1,5 +1,3 @@
-using BuildAnalytics.Core.Query;
-
 namespace BuildAnalytics.App.Cli;
 
 /// <summary>
@@ -11,7 +9,6 @@ public sealed record CliOptions(
     string Project,
     string OutputRoot,
     string OutputPath,
-    DetailPolicy DetailPolicy,
     int MaxRuns,
     string ApiVersion,
     bool Quiet);

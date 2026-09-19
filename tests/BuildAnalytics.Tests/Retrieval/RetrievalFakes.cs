@@ -20,12 +20,8 @@ internal sealed class FakeBuildSource(EventLog? log = null) : IBuildSource
 
     private readonly Dictionary<string, BuildPage> _pages = [];
     private readonly Dictionary<string, Exception> _listFailures = [];
-    private readonly Dictionary<int, BuildRun> _details = [];
-    private readonly Dictionary<int, Exception> _detailFailures = [];
 
     public List<(BuildQuery Query, string? Token)> ListCalls { get; } = [];
-
-    public List<int> DetailCalls { get; } = [];
 
     public Func<BuildQuery, string?, CancellationToken, Task<BuildPage>>? OnList { get; set; }
 
@@ -38,18 +34,6 @@ internal sealed class FakeBuildSource(EventLog? log = null) : IBuildSource
     public FakeBuildSource ListThrows(string? token, Exception exception)
     {
         _listFailures[Key(token)] = exception;
-        return this;
-    }
-
-    public FakeBuildSource Detail(int runId, BuildRun run)
-    {
-        _details[runId] = run;
-        return this;
-    }
-
-    public FakeBuildSource DetailThrows(int runId, Exception exception)
-    {
-        _detailFailures[runId] = exception;
         return this;
     }
 
@@ -71,21 +55,6 @@ internal sealed class FakeBuildSource(EventLog? log = null) : IBuildSource
         return _pages.TryGetValue(Key(continuationToken), out var page)
             ? Task.FromResult(page)
             : throw new InvalidOperationException($"No scripted page for token '{continuationToken}'.");
-    }
-
-    public Task<BuildRun> GetDetailAsync(BuildQuery query, int runId, CancellationToken cancellationToken)
-    {
-        DetailCalls.Add(runId);
-        log?.Add($"detail:{runId}");
-
-        if (_detailFailures.TryGetValue(runId, out var failure))
-        {
-            throw failure;
-        }
-
-        return _details.TryGetValue(runId, out var run)
-            ? Task.FromResult(run)
-            : throw new InvalidOperationException($"No scripted detail for run {runId}.");
     }
 
     private static string Key(string? token) => token ?? StartKey;

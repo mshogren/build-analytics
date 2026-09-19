@@ -10,7 +10,6 @@ public sealed record BuildAnalyticsConfig(
     string? Project = null,
     string? OutputRoot = null,
     string? ApiVersion = null,
-    string? Detail = null,
     int? MaxRuns = null,
     bool? Quiet = null,
     string? Out = null);

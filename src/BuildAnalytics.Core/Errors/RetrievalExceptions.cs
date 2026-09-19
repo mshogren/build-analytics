@@ -4,14 +4,13 @@ namespace BuildAnalytics.Core.Errors;
 public enum StopReason
 {
     RetryAfterTooLong,
-    RunCapReached,
-    DetailThrottled
+    RunCapReached
 }
 
 /// <summary>
-/// The adapter stopped the run: the run-cap budget was reached, the server asked for a
-/// retry delay over 60s, or a detail fetch was throttled. Nothing is persisted; the CLI
-/// prints the reason and exits <c>1</c>.
+/// The adapter stopped the run: the run-cap budget was reached or the server asked
+/// for a retry delay over 60s. Nothing is persisted; the CLI prints the reason and
+/// exits <c>1</c>.
 /// </summary>
 public sealed class RetrievalStoppedException : Exception
 {
@@ -47,8 +46,6 @@ public sealed class RetrievalStoppedException : Exception
             "Retrieval stopped: Azure DevOps asked for a retry delay longer than 60s.",
         StopReason.RunCapReached =>
             "Retrieval stopped: the maxRuns budget was reached.",
-        StopReason.DetailThrottled =>
-            "Retrieval stopped: run detail retrieval was throttled.",
         _ => "Retrieval stopped."
     };
 }
@@ -78,24 +75,6 @@ public sealed class InvalidContinuationTokenException : Exception
 
     /// <summary>The offending token. Never logged verbatim by callers.</summary>
     public string? ContinuationToken { get; }
-}
-
-/// <summary>A specific build run does not exist in Azure DevOps (detail 404).</summary>
-public sealed class RunNotFoundException : Exception
-{
-    public RunNotFoundException(int runId)
-        : base($"Run {runId} was not found in Azure DevOps.")
-    {
-        RunId = runId;
-    }
-
-    public RunNotFoundException(int runId, Exception? innerException)
-        : base($"Run {runId} was not found in Azure DevOps.", innerException)
-    {
-        RunId = runId;
-    }
-
-    public int RunId { get; }
 }
 
 /// <summary>All retry attempts were consumed without a usable response.</summary>
@@ -166,25 +145,6 @@ public sealed class AdoRequestException : Exception
 
     public string? CorrelationId { get; }
 }
-
-/// <summary>
-/// A detail response body identified a different (or non-positive) run than requested.
-/// A protocol anomaly, not a 404, so it aborts the run rather than skipping it (ADR-86/90).
-/// </summary>
-public sealed class InvalidDetailPayloadException : Exception
-{
-    public InvalidDetailPayloadException(int requestedRunId, int returnedRunId)
-        : base($"Azure DevOps returned run {returnedRunId} for detail request {requestedRunId}.")
-    {
-        RequestedRunId = requestedRunId;
-        ReturnedRunId = returnedRunId;
-    }
-
-    public int RequestedRunId { get; }
-
-    public int ReturnedRunId { get; }
-}
-
 /// <summary>
 /// Builds error text from a status, a sanitized relative URL, and a correlation id only.
 /// The raw Azure DevOps body, the PAT, and absolute URLs are never included.

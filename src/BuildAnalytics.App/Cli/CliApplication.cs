@@ -17,7 +17,7 @@ public sealed class CliApplication
     public const string Usage =
         """
         build-analytics --org <url> --project <name> --output-root <path>
-            [--out <file.xlsx>] [--detail list|fill-missing] [--max-runs <n>] [--api-version <v>] [--quiet] [--config <path>]
+            [--out <file.xlsx>] [--max-runs <n>] [--api-version <v>] [--quiet] [--config <path>]
         build-analytics --help
         """;
 
@@ -93,11 +93,10 @@ public sealed class CliApplication
             var query = new BuildQuery(
                 options.Organization,
                 options.Project,
-                options.DetailPolicy,
                 options.ApiVersion);
 
             var pipeline = new RetrievalPipeline(source, runStore, progress);
-            var retrieval = await pipeline.RunAsync(query, cancellationToken).ConfigureAwait(false);
+            await pipeline.RunAsync(query, cancellationToken).ConfigureAwait(false);
 
             progress.GeneratingReport();
             var writer = new ExcelTimingReportWriter(options.OutputPath);
@@ -107,7 +106,7 @@ public sealed class CliApplication
             _console.WriteLine(options.OutputPath);
             if (!options.Quiet)
             {
-                _console.WriteError($"Report complete: {report.RunsRead} run(s) read, {report.CorruptSkipped} corrupt skipped, {retrieval.FailedRunIds.Count} skipped (detail unavailable).");
+                _console.WriteError($"Report complete: {report.RunsRead} run(s) read, {report.CorruptSkipped} corrupt skipped.");
             }
 
             return 0;

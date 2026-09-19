@@ -88,7 +88,6 @@ public static class ConfigLoader
             string? project = null;
             string? outputRoot = null;
             string? apiVersion = null;
-            string? detail = null;
             string? output = null;
             int? maxRuns = null;
             bool? quiet = null;
@@ -120,14 +119,6 @@ public static class ConfigLoader
             if (TryGet(root, "apiVersion", out var apiVersionValue))
             {
                 if (!TryString(apiVersionValue, "apiVersion", out apiVersion, out var error))
-                {
-                    return new ConfigLoadResult(null, error);
-                }
-            }
-
-            if (TryGet(root, "detail", out var detailValue))
-            {
-                if (!TryString(detailValue, "detail", out detail, out var error))
                 {
                     return new ConfigLoadResult(null, error);
                 }
@@ -167,7 +158,7 @@ public static class ConfigLoader
             }
 
             return new ConfigLoadResult(
-                new BuildAnalyticsConfig(organization, project, outputRoot, apiVersion, detail, maxRuns, quiet, output),
+                new BuildAnalyticsConfig(organization, project, outputRoot, apiVersion, maxRuns, quiet, output),
                 null);
         }
     }

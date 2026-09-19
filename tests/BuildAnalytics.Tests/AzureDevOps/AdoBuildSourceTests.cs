@@ -35,7 +35,6 @@ public sealed class AdoBuildSourceTests
         Assert.Equal("page-2", page.ContinuationToken);
         Assert.All(page.Runs, run =>
         {
-            Assert.Equal(RunSource.List, run.Source);
             Assert.Equal(ClockNow, run.FetchedAt);
         });
         Assert.Equal(9, page.Runs[1].PoolId);
@@ -127,37 +126,6 @@ public sealed class AdoBuildSourceTests
     }
 
     [Fact]
-    public async Task Detail_stamps_source_and_targets_the_run()
-    {
-        var (source, handler, _, clock) = Create();
-        clock.UtcNow = ClockNow;
-        handler.EnqueueJson("""{ "id": 42, "definition": { "id": 5, "name": "ci" }, "status": "completed", "result": "succeeded" }""");
-
-        var run = await source.GetDetailAsync(Query(), 42, default);
-
-        Assert.Equal(RunSource.Detail, run.Source);
-        Assert.Equal(ClockNow, run.FetchedAt);
-        Assert.Equal("/org/project/_apis/build/builds/42", handler.RequestUris[0].AbsolutePath);
-    }
-
-    [Fact]
-    public async Task Detail_404_is_RunNotFoundException()
-    {
-        var (source, handler, _, _) = Create();
-        handler.EnqueueStatus(HttpStatusCode.NotFound);
-
-        await Assert.ThrowsAsync<RunNotFoundException>(() => source.GetDetailAsync(Query(), 42, default));
-    }
-
-    [Fact]
-    public async Task Detail_rejects_a_non_positive_run_id()
-    {
-        var (source, _, _, _) = Create();
-
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => source.GetDetailAsync(Query(), 0, default));
-    }
-
-    [Fact]
     public async Task Malformed_list_body_is_wrapped_as_AdoRequestException()
     {
         var (source, handler, _, _) = Create();
@@ -166,24 +134,10 @@ public sealed class AdoBuildSourceTests
         await Assert.ThrowsAsync<AdoRequestException>(() => source.ListAsync(Query(), null, default));
     }
 
-    [Fact]
-    public async Task Detail_id_mismatch_throws_InvalidDetailPayloadException()
-    {
-        var (source, handler, _, _) = Create();
-        handler.EnqueueJson("""{ "id": 6, "definition": { "id": 5, "name": "ci" } }""");
-
-        var exception = await Assert.ThrowsAsync<InvalidDetailPayloadException>(
-            () => source.GetDetailAsync(Query(), 5, default));
-
-        Assert.Equal(5, exception.RequestedRunId);
-        Assert.Equal(6, exception.ReturnedRunId);
-    }
-
     private static BuildQuery Query()
         => new(
             "https://dev.azure.com/org",
             "project",
-            DetailPolicy.FillMissing,
             "7.1");
 
     private static (AdoBuildSource Source, ScriptedHttpMessageHandler Handler, FakeDelayScheduler Delays, FakeTimeProvider Clock) Create(

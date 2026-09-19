@@ -7,13 +7,6 @@ using BuildAnalytics.Core.Ports;
 
 namespace BuildAnalytics.App.AzureDevOps;
 
-/// <summary>List-style and detail-style requests differ in how 404/429 are surfaced.</summary>
-public enum AdoRequestKind
-{
-    List,
-    Detail
-}
-
 /// <summary>A successful ADO response body plus the paging continuation token.</summary>
 public sealed record AdoResponse(string Body, string? ContinuationToken);
 
@@ -54,8 +47,6 @@ public sealed class AdoRequestExecutor
     public async Task<AdoResponse> SendAsync(
         Func<HttpRequestMessage> requestFactory,
         string requestPath,
-        AdoRequestKind kind,
-        int? runId,
         string? continuationToken,
         CancellationToken cancellationToken)
     {
@@ -111,11 +102,6 @@ public sealed class AdoRequestExecutor
 
                     if (attempt == MaxAttempts)
                     {
-                        if (kind == AdoRequestKind.Detail && response.StatusCode == HttpStatusCode.TooManyRequests)
-                        {
-                            throw new RetrievalStoppedException(StopReason.DetailThrottled);
-                        }
-
                         throw new RetryExhaustedException(attempt, requestPath, status, ReadCorrelationId(response), lastTransient);
                     }
 
@@ -125,14 +111,7 @@ public sealed class AdoRequestExecutor
                     continue;
                 }
 
-                if (kind == AdoRequestKind.Detail && response.StatusCode == HttpStatusCode.NotFound)
-                {
-                    throw new RunNotFoundException(runId ?? 0);
-                }
-
-                if (kind == AdoRequestKind.List
-                    && response.StatusCode == HttpStatusCode.BadRequest
-                    && continuationToken is not null)
+                if (response.StatusCode == HttpStatusCode.BadRequest && continuationToken is not null)
                 {
                     // ADR-72: a 400 is a token error only when a token was actually sent.
                     throw new InvalidContinuationTokenException(continuationToken);

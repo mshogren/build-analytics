@@ -13,9 +13,6 @@ public static class AdoUrlBuilder
     public static string ListPath(string project)
         => $"/{Uri.EscapeDataString(project)}/_apis/build/builds";
 
-    public static string DetailPath(string project, int runId)
-        => $"/{Uri.EscapeDataString(project)}/_apis/build/builds/{runId.ToString(CultureInfo.InvariantCulture)}";
-
     public static Uri ListUri(BuildQuery query, int top, string? continuationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -33,16 +30,6 @@ public static class AdoUrlBuilder
         }
 
         return Build(query.Organization, ListPath(query.Project), parameters);
-    }
-
-    public static Uri DetailUri(BuildQuery query, int runId)
-    {
-        ArgumentNullException.ThrowIfNull(query);
-
-        return Build(
-            query.Organization,
-            DetailPath(query.Project, runId),
-            [new("api-version", query.ApiVersion)]);
     }
 
     private static Uri Build(string organization, string path, IReadOnlyList<KeyValuePair<string, string>> parameters)

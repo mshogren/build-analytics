@@ -24,8 +24,8 @@ application can be rebuilt from scratch by following it.
 4. **One command.** Retrieval and reporting are a single invocation; there are no
    subcommands and no report-only mode.
 5. **Fetch the list, not each build.** The build-list payload already contains
-   every field the report uses, so per-build detail calls are opt-in
-   (`--detail fill-missing`) and only fill rows the list left incomplete.
+   every field the report uses, so it is the only data source; the tool never
+   fetches an individual build document.
 6. **Credentials are environmental.** `AZDO_PAT` only — never a CLI flag, never
    persisted, never logged.
 
@@ -67,7 +67,7 @@ the first list call and only once the PAT is present.
 `runs.jsonl` is one **compact JSON object per line** (camelCase, string enums):
 
 ```
-schemaVersion, source(list|detail), fetchedAt, id, definitionId, definitionName,
+schemaVersion, fetchedAt, id, definitionId, definitionName,
 buildNumber, queueTime, startTime, finishTime, status, result, reason,
 poolId, poolName, sourceBranch
 ```
@@ -89,8 +89,7 @@ Write and read rules:
 ## Retrieval
 
 - `IBuildSource` is page-oriented: `ListAsync(query, continuationToken)` returns a
-  page of runs plus the next token; `GetDetailAsync(query, runId)` is the opt-in
-  per-build fetch.
+  page of runs plus the next token.
 - One GET per list call. `api-version`, `$top` (page size 1000, trimmed by the
   remaining budget) and `queryOrder=queueTimeDescending`; the next token is read
   from `x-ms-continuationtoken` and sent back as a query parameter.
@@ -103,11 +102,6 @@ Write and read rules:
   are honoured, longer ones stop the run.
 - **Continuation tokens**: an invalid or repeated token restarts the listing from
   the beginning exactly once; a second occurrence fails the run.
-- **Detail policy**: `list` (default) never fetches detail. `fill-missing` fetches
-  a build's detail when the list row lacks `definitionId`, `definitionName`,
-  `status` or `result`, or when a `completed` run is missing a timestamp.
-- A detail `404` skips that build (it is counted and surfaced to the user); it
-  never blocks the page.
 - Error text carries the HTTP status, a relative path and a correlation id — never
   the raw response body, the PAT, or an absolute local path.
 
@@ -147,13 +141,13 @@ One command:
 
 ```
 build-analytics --org <url> --project <name> --output-root <path>
-    [--out <file.xlsx>] [--detail list|fill-missing] [--max-runs <n>]
+    [--out <file.xlsx>] [--max-runs <n>]
     [--api-version <v>] [--quiet] [--config <path>]
 build-analytics --help
 ```
 
-- `--out` defaults to `<output-root>/timing-report.xlsx`; `--detail` defaults to
-  `list`; `--api-version` defaults to `7.1`; `--max-runs` defaults to unbounded.
+- `--out` defaults to `<output-root>/timing-report.xlsx`; `--api-version` defaults
+  to `7.1`; `--max-runs` defaults to unbounded.
 - Progress goes to **stderr** (one line per page, then `Generating report...`);
   the report path goes to stdout. `--quiet` suppresses progress but never errors.
 - `help`, `--help`, `-h` and no arguments print usage and exit `0`.
@@ -168,7 +162,7 @@ Optional JSON at `build-analytics.config.json` (working directory) or
 `--config <path>`. Precedence is **CLI → config → built-in default**; there is no
 environment tier for these values.
 
-Keys: `org`, `project`, `outputRoot`, `apiVersion`, `detail`, `maxRuns`, `quiet`,
+Keys: `org`, `project`, `outputRoot`, `apiVersion`, `maxRuns`, `quiet`,
 `out`. A `pat` key is a **usage error naming `AZDO_PAT`** and is never read;
 unknown keys are ignored. A missing default file is fine; a missing file named by
 `--config` is an error.
@@ -189,8 +183,7 @@ unknown keys are ignored. A missing default file is fine; a missing file named b
   time inside pure logic.
 - Areas covered: timing calculations and monthly rollup; the run log (append,
   last-wins dedupe, malformed tolerance, truncation, durability); the tree
-  clearer; adapter paging, retry, `Retry-After`, token restart, detail policy and
-  budget; the pipeline (paging, append-before-progress, restart replay, progress);
+  clearer; adapter paging, retry, `Retry-After`, token restart and budget; the pipeline (paging, append-before-progress, restart replay, progress);
   reporting (sheets, filter-aware formulas, typed dates, zero-run workbook); CLI
   parsing, exit codes, progress/quiet and the PAT gate.
 

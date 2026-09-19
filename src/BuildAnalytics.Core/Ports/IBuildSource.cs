@@ -3,10 +3,8 @@ using BuildAnalytics.Core.Query;
 
 namespace BuildAnalytics.Core.Ports;
 
-/// <summary>Paged build-list retrieval with an optional per-run detail fallback.</summary>
+/// <summary>Paged build-list retrieval. The list payload is the only data source.</summary>
 public interface IBuildSource
 {
     Task<BuildPage> ListAsync(BuildQuery query, string? continuationToken, CancellationToken cancellationToken);
-
-    Task<BuildRun> GetDetailAsync(BuildQuery query, int runId, CancellationToken cancellationToken);
 }

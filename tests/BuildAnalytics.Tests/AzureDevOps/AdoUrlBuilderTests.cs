@@ -29,15 +29,6 @@ public sealed class AdoUrlBuilderTests
         Assert.DoesNotContain("continuationToken=", uri.Query, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void Detail_uri_targets_the_build()
-    {
-        var uri = AdoUrlBuilder.DetailUri(Query(), runId: 42);
-
-        Assert.Equal("/org/project/_apis/build/builds/42", uri.AbsolutePath);
-        Assert.Contains("api-version=7.1", uri.Query, StringComparison.Ordinal);
-    }
-
     private static BuildQuery Query()
-        => new("https://dev.azure.com/org", "project", DetailPolicy.FillMissing, "7.1");
+        => new("https://dev.azure.com/org", "project", "7.1");
 }

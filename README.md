@@ -2,10 +2,10 @@
 
 Retrieve Azure DevOps build-run timing data and produce a local Excel summary.
 
-The tool retrieves the build **list** only (no per-run detail calls unless you ask
-for them), writes it to a single append-only log, and then generates the report —
-all in one command. Every invocation is stateless: the previous log and report are
-cleared first, so each run re-retrieves the full history.
+The tool retrieves the build **list** only, writes it to a single append-only log,
+and then generates the report — all in one command. Every invocation is stateless:
+the previous log and report are cleared first, so each run re-retrieves the full
+history.
 
 ## Requirements
 
@@ -41,7 +41,6 @@ Options:
 | `--project <name>` | yes | Project name (case-sensitive) |
 | `--output-root <path>` | yes | Created if absent; its `runs.jsonl` is cleared at the start of every run |
 | `--out <file.xlsx>` | no | Report path. Defaults to `<output-root>/timing-report.xlsx`; cleared at the start of every run |
-| `--detail list\|fill-missing` | no | Default `list`. `fill-missing` fetches per-run detail only when a list row is missing required fields |
 | `--max-runs <n>` | no | Retrieval budget. `0` stops immediately; omit for unlimited |
 | `--api-version <v>` | no | Default `7.1` |
 | `--quiet` | no | Suppress progress output |
@@ -57,9 +56,8 @@ workbook.
 
 **Progress:** progress goes to stderr — one line per page once that page's
 runs are durable (`Retrieving page 3 - 1,000 builds`) and a final
-`Generating report...`. The completion line reports runs read, malformed log
-lines skipped, and listed builds skipped because their detail fetch returned 404
-(`skipped (detail unavailable)`). `--quiet` suppresses it.
+`Generating report...`. The completion line reports runs read and malformed log
+lines skipped. `--quiet` suppresses it.
 
 ## Report
 
@@ -91,7 +89,6 @@ with `--config <path>`. A missing default file is fine; a missing file named via
   "project": "my-project",
   "outputRoot": "./analytics",
   "apiVersion": "7.1",
-  "detail": "fill-missing",
   "maxRuns": 1000,
   "quiet": false,
   "out": "./analytics/timing-report.xlsx"

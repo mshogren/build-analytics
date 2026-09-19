@@ -1,19 +1,11 @@
 namespace BuildAnalytics.Core.Models;
 
-/// <summary>Where a run's raw payload came from.</summary>
-public enum RunSource
-{
-    List,
-    Detail
-}
-
 /// <summary>
 /// Flat raw run contract. ADO fields outside this record are intentionally dropped.
 /// Durations are not stored here; they are derived by the pure timing calculator.
 /// </summary>
 public sealed record BuildRun(
     int SchemaVersion,
-    RunSource Source,
     DateTimeOffset FetchedAt,
     int Id,
     int? DefinitionId,

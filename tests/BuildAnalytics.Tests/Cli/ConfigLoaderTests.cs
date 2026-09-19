@@ -64,7 +64,6 @@ public sealed class ConfigLoaderTests
               "project": "p",
               "outputRoot": "root",
               "apiVersion": "6.0",
-              "detail": "fill-missing",
               "maxRuns": 25,
               "quiet": true,
               "out": "custom.xlsx",
@@ -80,7 +79,6 @@ public sealed class ConfigLoaderTests
         Assert.Equal("p", config.Project);
         Assert.Equal("root", config.OutputRoot);
         Assert.Equal("6.0", config.ApiVersion);
-        Assert.Equal("fill-missing", config.Detail);
         Assert.Equal(25, config.MaxRuns);
         Assert.True(config.Quiet);
         Assert.Equal("custom.xlsx", config.Out);

@@ -22,8 +22,7 @@ public sealed class JsonRoundTripTests
             reason: "manual",
             poolId: 3,
             poolName: "pool",
-            sourceBranch: "refs/heads/main",
-            source: RunSource.Detail);
+            sourceBranch: "refs/heads/main");
 
         var back = JsonSerializer.Deserialize<BuildRun>(JsonSerializer.Serialize(run, BuildAnalyticsJson.Options), BuildAnalyticsJson.Options);
 
@@ -81,33 +80,13 @@ public sealed class JsonRoundTripTests
         }
     }
 
-    [Theory]
-    [InlineData(RunSource.List, "list")]
-    [InlineData(RunSource.Detail, "detail")]
-    public void BuildRun_SerializesSource_AsSnakeCaseString(RunSource source, string expected)
-    {
-        var json = JsonSerializer.Serialize(TestRuns.Create(source: source), BuildAnalyticsJson.Options);
-
-        Assert.Contains($"\"source\":\"{expected}\"", json, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void BuildRun_DeserializesSource_FromString()
-    {
-        var json = JsonSerializer.Serialize(TestRuns.Create(source: RunSource.Detail), BuildAnalyticsJson.Options);
-
-        var back = JsonSerializer.Deserialize<BuildRun>(json, BuildAnalyticsJson.Options);
-
-        Assert.Equal(RunSource.Detail, back!.Source);
-    }
-
     [Fact]
     public void BuildRun_GoldenShape_PropertyNames()
     {
         var expected = new[]
         {
             "buildNumber", "definitionId", "definitionName", "fetchedAt", "finishTime", "id",
-            "poolId", "poolName", "queueTime", "reason", "result", "schemaVersion", "source",
+            "poolId", "poolName", "queueTime", "reason", "result", "schemaVersion",
             "sourceBranch", "startTime", "status"
         };
 

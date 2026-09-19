@@ -41,7 +41,6 @@ public sealed class CliParserTests
 
         Assert.False(result.IsError);
         var options = result.Options!;
-        Assert.Equal(DetailPolicy.ListOnly, options.DetailPolicy);
         Assert.Equal("7.1", options.ApiVersion);
         Assert.Equal(int.MaxValue, options.MaxRuns);
         Assert.False(options.Quiet);
@@ -57,7 +56,6 @@ public sealed class CliParserTests
             "--project", "p",
             "--output-root", "root",
             "--out", "custom.xlsx",
-            "--detail", "fill-missing",
             "--max-runs", "50",
             "--api-version", "6.0",
             "--quiet"
@@ -65,14 +63,12 @@ public sealed class CliParserTests
 
         var options = result.Options!;
         Assert.Equal("custom.xlsx", options.OutputPath);
-        Assert.Equal(DetailPolicy.FillMissing, options.DetailPolicy);
         Assert.Equal(50, options.MaxRuns);
         Assert.Equal("6.0", options.ApiVersion);
         Assert.True(options.Quiet);
     }
 
     [Theory]
-    [InlineData("--detail", "bogus")]
     [InlineData("--max-runs", "-1")]
     [InlineData("--max-runs", "abc")]
     public void Rejects_invalid_values(string flag, string value)
@@ -114,7 +110,6 @@ public sealed class CliParserTests
             Project: "config-project",
             OutputRoot: "config-root",
             ApiVersion: "6.0",
-            Detail: "fill-missing",
             MaxRuns: 10,
             Quiet: true,
             Out: "config.xlsx");
@@ -123,17 +118,15 @@ public sealed class CliParserTests
         Assert.Equal("https://dev.azure.com/config", fromConfig.Organization);
         Assert.Equal("config-project", fromConfig.Project);
         Assert.Equal("6.0", fromConfig.ApiVersion);
-        Assert.Equal(DetailPolicy.FillMissing, fromConfig.DetailPolicy);
         Assert.Equal(10, fromConfig.MaxRuns);
         Assert.True(fromConfig.Quiet);
         Assert.Equal("config.xlsx", fromConfig.OutputPath);
 
         var overridden = CliParser.Parse(
-            ["--org", "https://dev.azure.com/cli", "--max-runs", "3", "--detail", "list"],
+            ["--org", "https://dev.azure.com/cli", "--max-runs", "3"],
             config).Options!;
         Assert.Equal("https://dev.azure.com/cli", overridden.Organization);
         Assert.Equal(3, overridden.MaxRuns);
-        Assert.Equal(DetailPolicy.ListOnly, overridden.DetailPolicy);
     }
 
     [Fact]
@@ -142,14 +135,6 @@ public sealed class CliParserTests
         var config = new BuildAnalyticsConfig(Organization: "o", Project: "p", OutputRoot: "r");
 
         Assert.False(CliParser.Parse(["--quiet"], config).IsError);
-    }
-
-    [Fact]
-    public void Invalid_config_detail_is_a_usage_error()
-    {
-        var config = new BuildAnalyticsConfig(Organization: "o", Project: "p", OutputRoot: "r", Detail: "nonsense");
-
-        Assert.True(CliParser.Parse(["--quiet"], config).IsError);
     }
 
     [Fact]

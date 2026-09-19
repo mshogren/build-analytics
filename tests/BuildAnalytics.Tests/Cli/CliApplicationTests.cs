@@ -40,7 +40,6 @@ public sealed class CliApplicationTests
         Assert.True(File.Exists(outputPath));
         Assert.Contains(outputPath, console.Stdout);
         Assert.Contains("Generating report...", console.Stderr);
-        Assert.Contains("0 skipped (detail unavailable)", string.Join("\n", console.Stderr), StringComparison.Ordinal);
     }
 
     [Fact]

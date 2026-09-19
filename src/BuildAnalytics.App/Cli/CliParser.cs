@@ -1,6 +1,5 @@
 using System.Globalization;
 using BuildAnalytics.App.Reporting;
-using BuildAnalytics.Core.Query;
 
 namespace BuildAnalytics.App.Cli;
 
@@ -38,7 +37,6 @@ public static class CliParser
         string? outputRoot = null;
         string? outputPath = null;
         string? apiVersion = null;
-        var detailPolicy = (DetailPolicy?)null;
         int? maxRuns = null;
         var quiet = false;
 
@@ -74,9 +72,6 @@ public static class CliParser
                 case "--out":
                     outputPath = Value();
                     break;
-                case "--detail":
-                    detailPolicy = ParseDetailPolicy(Value());
-                    break;
                 case "--max-runs":
                     maxRuns = ParseNonNegative(name, Value());
                     break;
@@ -103,8 +98,6 @@ public static class CliParser
         Require(effectiveProject, "--project");
         Require(effectiveOutputRoot, "--output-root");
 
-        var effectiveDetail = detailPolicy
-            ?? (config?.Detail is { } configuredDetail ? ParseDetailPolicy(configuredDetail) : DetailPolicy.ListOnly);
         var effectiveOutputPath = Coalesce(
             outputPath,
             config?.Out,
@@ -115,7 +108,6 @@ public static class CliParser
             effectiveProject!,
             effectiveOutputRoot!,
             effectiveOutputPath,
-            effectiveDetail,
             maxRuns ?? config?.MaxRuns ?? int.MaxValue,
             Coalesce(apiVersion, config?.ApiVersion, DefaultApiVersion),
             quiet || (config?.Quiet ?? false));
@@ -152,14 +144,6 @@ public static class CliParser
 
         return string.Empty;
     }
-
-    private static DetailPolicy ParseDetailPolicy(string value)
-        => value.ToLowerInvariant() switch
-        {
-            "list" or "listonly" or "list-only" => DetailPolicy.ListOnly,
-            "fill-missing" or "fillmissing" or "fill" => DetailPolicy.FillMissing,
-            _ => throw new CliUsageException($"Invalid --detail value '{value}'. Expected 'list' or 'fill-missing'.")
-        };
 
     private static int ParseNonNegative(string flag, string value)
         => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed >= 0

@@ -19,11 +19,9 @@ internal static class TestRuns
         string? reason = "manual",
         int? poolId = 1,
         string? poolName = "pool",
-        string? sourceBranch = "main",
-        RunSource source = RunSource.List)
+        string? sourceBranch = "main")
         => new(
             SchemaVersion: 1,
-            Source: source,
             FetchedAt: FetchedAt,
             Id: id,
             DefinitionId: definitionId,

@@ -5,13 +5,10 @@ using BuildAnalytics.Core.Query;
 
 namespace BuildAnalytics.App.Retrieval;
 
-/// <summary>Outcome of one retrieval pass: the ids of list-time 404s that were skipped.</summary>
-public sealed record RetrievalResult(IReadOnlyList<int> FailedRunIds);
-
 /// <summary>
-/// List (paging from the beginning) -> detail-if-needed -> durable append (ADR-110).
-/// There is no manifest, lock, resume, fingerprint or early stop: every run re-retrieves the
-/// full history. The adapter owns the run budget and HTTP retry.
+/// List (paging from the beginning) -> durable append (ADR-110). There is no manifest, lock,
+/// resume, fingerprint, or early stop: every run re-retrieves the full history
+/// from the build-list payload. The adapter owns the run budget and HTTP retry.
 /// </summary>
 public sealed class RetrievalPipeline(
     IBuildSource source,
@@ -20,15 +17,14 @@ public sealed class RetrievalPipeline(
 {
     private readonly IRetrievalProgress _progress = progress ?? NullRetrievalProgress.Instance;
 
-    public async Task<RetrievalResult> RunAsync(BuildQuery query, CancellationToken cancellationToken)
+    public async Task RunAsync(BuildQuery query, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
         cancellationToken.ThrowIfCancellationRequested();
 
         // The log was cleared before this pass (ADR-110). A token-restart replay must not
-        // re-append or re-fetch detail for a run already handled in this same pass.
+        // re-append a run already handled in this same pass.
         var processed = new HashSet<int>();
-        var failedRunIds = new List<int>();
         var pagesFetched = 0;
         var runsWritten = 0;
         string? continuationToken = null;
@@ -68,30 +64,11 @@ public sealed class RetrievalPipeline(
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (processed.Contains(listed.Id))
+                if (processed.Add(listed.Id))
                 {
-                    continue;
+                    pageRuns.Add(listed);
+                    runsWritten++;
                 }
-
-                var run = listed;
-                if (DetailPolicyEvaluator.NeedsDetail(run, query.DetailPolicy))
-                {
-                    try
-                    {
-                        run = await source.GetDetailAsync(query, run.Id, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (RunNotFoundException)
-                    {
-                        // A missing run is skipped and recorded; it does not block the page.
-                        failedRunIds.Add(run.Id);
-                        processed.Add(run.Id);
-                        continue;
-                    }
-                }
-
-                pageRuns.Add(run);
-                processed.Add(run.Id);
-                runsWritten++;
             }
 
             // Persist the page durably before moving on, then announce it. A page is only
@@ -128,6 +105,5 @@ public sealed class RetrievalPipeline(
         }
 
         _progress.Completed(pagesFetched, runsWritten);
-        return new RetrievalResult(failedRunIds.ToArray());
     }
 }

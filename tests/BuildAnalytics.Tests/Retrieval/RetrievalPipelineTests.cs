@@ -16,9 +16,8 @@ public sealed class RetrievalPipelineTests
         source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "t1"));
         source.Page("t1", new BuildPage([TestRuns.Create(id: 2)], null));
 
-        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+        await pipeline.RunAsync(Query(), CancellationToken.None);
 
-        Assert.Empty(result.FailedRunIds);
         Assert.Equal([null, "t1"], source.ListCalls.Select(call => call.Token));
         Assert.Equal([1, 2], runs.Writes.Select(run => run.Id));
         Assert.Equal(
@@ -47,7 +46,7 @@ public sealed class RetrievalPipelineTests
         source.Page("t1", new BuildPage([TestRuns.Create(id: 2)], "t2"));
         source.Page("t2", new BuildPage([TestRuns.Create(id: 3)], null));
 
-        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+        await pipeline.RunAsync(Query(), CancellationToken.None);
 
         Assert.Equal(3, source.ListCalls.Count);
         Assert.Equal([null, "t1", "t2"], source.ListCalls.Select(call => call.Token));
@@ -60,54 +59,10 @@ public sealed class RetrievalPipelineTests
         var (pipeline, source, runs, _, _) = Create();
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, buildNumber: "first"), TestRuns.Create(id: 1, buildNumber: "second")], null));
 
-        var result = await pipeline.RunAsync(Query(), CancellationToken.None);
+        await pipeline.RunAsync(Query(), CancellationToken.None);
 
         Assert.Equal([1], runs.Writes.Select(run => run.Id));
         Assert.Equal("first", runs.Get(1)!.BuildNumber);
-    }
-
-    // ---- detail policy ----
-
-    [Fact]
-    public async Task Detail_is_fetched_only_when_the_policy_requires_it()
-    {
-        var (pipeline, source, runs, _, _) = Create();
-        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
-
-        await pipeline.RunAsync(Query(DetailPolicy.ListOnly), CancellationToken.None);
-
-        Assert.Empty(source.DetailCalls);
-        Assert.Single(runs.Writes);
-    }
-
-    [Fact]
-    public async Task Detail_replaces_the_list_run()
-    {
-        var (pipeline, source, runs, _, _) = Create();
-        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
-        source.Detail(1, TestRuns.Create(id: 1, definitionName: "from-detail", source: RunSource.Detail));
-
-        await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
-
-        Assert.Equal([1], source.DetailCalls);
-        Assert.Equal(RunSource.Detail, runs.Writes[0].Source);
-    }
-
-    [Fact]
-    public async Task Detail_404_skips_the_run_records_it_and_still_completes()
-    {
-        var (pipeline, source, runs, _, _) = Create();
-        source.Page(null, new BuildPage(
-            [TestRuns.Create(id: 1, definitionId: null), TestRuns.Create(id: 2, status: "inProgress")],
-            "t1"));
-        source.DetailThrows(1, new RunNotFoundException(1));
-        source.Page("t1", new BuildPage([], null));
-
-        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
-
-        Assert.Equal([1], result.FailedRunIds);
-        Assert.Equal([2], runs.Writes.Select(run => run.Id));
-        Assert.Equal([1], source.DetailCalls);
     }
 
     // ---- failure transitions ----
@@ -130,7 +85,6 @@ public sealed class RetrievalPipelineTests
         var exception = await Assert.ThrowsAsync<RetrievalStoppedException>(() => pipeline.RunAsync(Query(), CancellationToken.None));
 
         Assert.Equal(StopReason.RunCapReached, exception.Reason);
-        Assert.Empty(source.DetailCalls);
     }
 
     [Fact]
@@ -186,16 +140,14 @@ public sealed class RetrievalPipelineTests
     }
 
     [Fact]
-    public async Task Restart_replay_does_not_reappend_or_refetch()
+    public async Task Restart_replay_does_not_reappend()
     {
         var (pipeline, source, runs, _, _) = Create();
-        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], "t1"));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], "t1"));
         source.Page("t1", new BuildPage([], "t1"));
-        source.Detail(1, TestRuns.Create(id: 1, source: RunSource.Detail));
 
-        await Assert.ThrowsAsync<InvalidContinuationTokenException>(() => pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidContinuationTokenException>(() => pipeline.RunAsync(Query(), CancellationToken.None));
 
-        Assert.Equal([1], source.DetailCalls);
         Assert.Equal([1], runs.Writes.Select(run => run.Id));
     }
 
@@ -233,8 +185,8 @@ public sealed class RetrievalPipelineTests
 
     // ---- helpers ----
 
-    private static BuildQuery Query(DetailPolicy policy = DetailPolicy.ListOnly)
-        => new("https://dev.azure.com/org", "project", policy, "7.1");
+    private static BuildQuery Query()
+        => new("https://dev.azure.com/org", "project", "7.1");
 
     private static (
         RetrievalPipeline Pipeline,
