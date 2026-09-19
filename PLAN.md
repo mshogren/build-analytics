@@ -635,7 +635,12 @@ standard Excel semantics but cannot be executed here.
 
 ## Design Review Disposition (F1–F17)
 
-All findings accepted and folded into the sections above.
+> **Historical.** This table records the original design-review dispositions.
+> Several resolutions were later changed — most by ADR-109 (single append-only
+> run log) and ADR-110/111 (clear-first, stateless, one command). See the banner
+> at the top of this document for the current behaviour.
+
+All findings were accepted and folded into the sections above.
 
 | ID | Finding | Resolution |
 |---|---|---|
