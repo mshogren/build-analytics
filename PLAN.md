@@ -594,7 +594,20 @@ truncate.
     runs **only when both counts are zero**, so a bad line can never be erased into
     a silently incomplete report. `runs/<runId>/run.json` and the `runs/` directory
     are removed; `IRunStore` becomes `ReadAllAsync` / `AppendAsync` /
-    `ReplaceAllAsync`.
+    `ReplaceAllAsync` (superseded by ADR-110, which drops the manifest, the lock
+    and the cross-run state entirely).
+110. **Clear-first, stateless retrieval.** There is no manifest, no lock and no
+    cross-run state. Each invocation deletes `<outputRoot>/runs.jsonl` and the
+    previous report (nothing else in the directory), lists the whole history,
+    appends each page, then reports. Consequently there is no resume, no
+    incremental fetch, no early stop, no fingerprint binding, no persisted
+    `FailedRunIds`, no re-fetch skip and no compaction. Rationale: without per-build
+    detail calls the list payload *is* the data and is cheap at this project's
+    scale, so the resume/incremental machinery is not worth its complexity.
+    Progress output is per page plus one report line, with no percentages.
+111. **One command.** `retrieve` and `report` are combined: a single invocation
+    retrieves and then writes the workbook. There is no report-only mode and no
+    verbs; `help` prints usage.
 79. **CLI surface.** Verbs `retrieve` / `report` / `help`. `retrieve` takes
     `--org`, `--project`, `--output-root` (required) plus `--from`, `--to`,
     `--definition-id` (repeatable), `--definition` (repeatable glob), `--detail`,
