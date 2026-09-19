@@ -111,7 +111,7 @@ a hard usage error naming `AZDO_PAT`.
 <output-root>/
   manifest.json                 # retrieval progress (schemaVersion, fingerprint, status; no cursor)
   manifest.lock                 # exclusive lock held by a retrieve
-  runs/<runId>/run.json         # one raw build run per id
+  runs.jsonl                    # append-only raw runs (one compact JSON object per line)
   timing-report.xlsx            # report output (default location)
 ```
 
@@ -125,7 +125,7 @@ an error — use a new root.
 
 - **no `--pat` flag** (it would leak into shell history and process listings)
 - **no `pat` key in the config file** (it is a hard error)
-- **no PAT stored on disk** — it never appears in `manifest.json`, `run.json`,
+- **no PAT stored on disk** — it never appears in `manifest.json`, `runs.jsonl`,
   the workbook, logs, or error messages
 
 ## Exit codes

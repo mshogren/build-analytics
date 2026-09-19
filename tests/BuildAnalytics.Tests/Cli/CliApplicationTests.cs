@@ -274,10 +274,8 @@ public sealed class CliApplicationTests
             Path.Combine(root, "manifest.json"),
             JsonSerializer.SerializeToUtf8Bytes(manifest, BuildAnalyticsJson.Options));
 
-        var runDirectory = Path.Combine(root, "runs", "1");
-        Directory.CreateDirectory(runDirectory);
         await File.WriteAllBytesAsync(
-            Path.Combine(runDirectory, "run.json"),
-            JsonSerializer.SerializeToUtf8Bytes(TestRuns.Create(id: 1), BuildAnalyticsJson.Options));
+            Path.Combine(root, "runs.jsonl"),
+            [.. JsonSerializer.SerializeToUtf8Bytes(TestRuns.Create(id: 1), BuildAnalyticsJson.Options), (byte)'\n']);
     }
 }

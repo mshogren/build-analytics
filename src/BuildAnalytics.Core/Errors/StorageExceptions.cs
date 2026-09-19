@@ -27,16 +27,24 @@ public sealed class UnsupportedSchemaVersionException : Exception
         Actual = actual;
     }
 
+    /// <summary>Aggregate form: a log reported one or more entries with an unsupported version.</summary>
+    public UnsupportedSchemaVersionException(int expected)
+        : base($"One or more stored runs declared a schema version other than {expected}; use a new output root.")
+    {
+        Expected = expected;
+        Actual = -1;
+    }
+
     public int Expected { get; }
 
     public int Actual { get; }
 }
 
-/// <summary>Existing run files belong to a different query fingerprint.</summary>
+/// <summary>Existing runs belong to a different query fingerprint.</summary>
 public sealed class FingerprintMismatchException : Exception
 {
     public FingerprintMismatchException(string expected, string actual)
-        : base("The existing run files belong to a different query; use a new output root.")
+        : base("The existing runs belong to a different query; use a new output root.")
     {
         Expected = expected;
         Actual = actual;
@@ -45,24 +53,6 @@ public sealed class FingerprintMismatchException : Exception
     public string Expected { get; }
 
     public string Actual { get; }
-}
-
-/// <summary>A run artifact exists but cannot be parsed.</summary>
-public sealed class CorruptRunFileException : Exception
-{
-    public CorruptRunFileException(int runId)
-        : base($"Run {runId} has a corrupt payload.")
-    {
-        RunId = runId;
-    }
-
-    public CorruptRunFileException(int runId, Exception? innerException)
-        : base($"Run {runId} has a corrupt payload.", innerException)
-    {
-        RunId = runId;
-    }
-
-    public int RunId { get; }
 }
 
 /// <summary>An unexpected storage IO failure (not lock contention, not corruption).</summary>

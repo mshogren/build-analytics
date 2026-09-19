@@ -26,38 +26,20 @@ public sealed class ReportingService(
             throw new ReportingErrorException(manifest?.Status);
         }
 
-        var runIds = await runs.ListRunIdsAsync(cancellationToken).ConfigureAwait(false);
-        var loaded = new List<BuildRun>();
-        var corruptSkipped = 0;
+        var read = await runs.ReadAllAsync(cancellationToken).ConfigureAwait(false);
 
-        foreach (var runId in runIds)
+        // ADR-77/109: an unsupported run schema aborts reporting (it cannot repair offline).
+        if (read.UnsupportedSchemaLineCount > 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            BuildRun? run;
-            try
-            {
-                run = await runs.TryReadAsync(runId, cancellationToken).ConfigureAwait(false);
-            }
-            catch (CorruptRunFileException)
-            {
-                // ADR-77: a corrupt run file is skipped and counted.
-                corruptSkipped++;
-                continue;
-            }
-
-            // ADR-77: a listed id whose file is absent is skipped silently. An unsupported
-            // run schemaVersion is not caught here and aborts (ADR-77/83 asymmetry).
-            if (run is not null)
-            {
-                loaded.Add(run);
-            }
+            throw new UnsupportedSchemaVersionException(BuildRun.CurrentSchemaVersion);
         }
 
+        var loaded = read.Runs;
         var summary = MonthlyTimingRollup.Summarize(loaded);
         var report = new TimingReport(summary, loaded);
         await writer.WriteAsync(report, cancellationToken).ConfigureAwait(false);
 
-        return new ReportingResult(report, loaded.Count, corruptSkipped);
+        // ADR-109: malformed lines are skipped and surfaced as the corrupt count.
+        return new ReportingResult(report, loaded.Count, read.MalformedLineCount);
     }
 }

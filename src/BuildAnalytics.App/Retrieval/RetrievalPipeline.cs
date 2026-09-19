@@ -43,10 +43,19 @@ public sealed class RetrievalPipeline(
         // (completed or non-empty) root is a typed error, not a silent no-op.
         var fingerprint = BuildQueryFingerprint.Compute(query);
 
-        var existingRunIds = await runs.ListRunIdsAsync(cancellationToken).ConfigureAwait(false);
+        // ADR-109: load the run log once; the in-memory index replaces every per-run disk read.
+        // Malformed/unsupported lines are absent from the index, so those runs are re-fetched
+        // (repaired) and dropped by the completion compaction.
+        var runRead = await runs.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+        var index = new Dictionary<int, BuildRun>();
+        foreach (var run in runRead.Runs)
+        {
+            index[run.Id] = run;
+        }
+
         if (existing is not null)
         {
-            ManifestCompatibility.EnsureCompatible(existing, fingerprint, existingRunIds, requireMatch: isCompleted);
+            ManifestCompatibility.EnsureCompatible(existing, fingerprint, index.Keys, requireMatch: isCompleted);
         }
 
         var createdAt = existing?.CreatedAt ?? clock.GetUtcNow();
@@ -56,9 +65,9 @@ public sealed class RetrievalPipeline(
         // stop until every prior failure has been re-encountered.
         var failedRunIds = new List<int>(existing?.FailedRunIds ?? []);
         var pendingFailed = new HashSet<int>(failedRunIds);
-        var existingIdSet = new HashSet<int>(existingRunIds);
+        var existingIdSet = new HashSet<int>(index.Keys);
         var writtenThisPass = new HashSet<int>();
-        var baseline = existingRunIds.Count;
+        var baseline = index.Count;
 
         // ADR-108: there is no resume cursor. Resume and refresh are one path - every pass
         // lists from the start (continuationToken starts null) and skips runs already durable
@@ -116,6 +125,9 @@ public sealed class RetrievalPipeline(
 
         async Task<RetrievalResult> CompleteAsync()
         {
+            // ADR-109: compact superseded duplicates; data must be durable before the manifest commit.
+            await runs.ReplaceAllAsync(index.Values.OrderBy(run => run.Id).ToArray(), cancellationToken).ConfigureAwait(false);
+
             // ADR-67: exhausted or early-stopped with failures is still completed.
             await CommitAsync(ManifestStatus.Completed, lastError: null).ConfigureAwait(false);
             _progress.Completed(pagesFetched, runsWritten);
@@ -169,6 +181,7 @@ public sealed class RetrievalPipeline(
 
                 var runsBeforePage = runsWritten;
                 var pageRecordedFailure = false;
+                var pageRuns = new List<BuildRun>();
 
                 foreach (var listed in page.Runs)
                 {
@@ -183,17 +196,15 @@ public sealed class RetrievalPipeline(
                         continue;
                     }
 
-                    // ADR-7/R11: on-disk files the active policy already accepts are left untouched
-                    // (never downgrade detail -> list). Corrupt/stale/unreadable files are re-fetched.
-                    if (existingIdSet.Contains(listed.Id))
+                    // ADR-7/R11/109: a run already in the in-memory index that the active policy
+                    // accepts is left untouched (never downgrade detail -> list). Malformed or
+                    // unsupported lines are absent from the index, so they are re-fetched here.
+                    if (index.TryGetValue(listed.Id, out var onDisk) &&
+                        !DetailPolicyEvaluator.NeedsDetail(onDisk, query.DetailPolicy))
                     {
-                        var onDisk = await TryReadExistingRunAsync(listed.Id, cancellationToken).ConfigureAwait(false);
-                        if (onDisk is not null && !DetailPolicyEvaluator.NeedsDetail(onDisk, query.DetailPolicy))
-                        {
-                            // A run that is now on disk is no longer a failure.
-                            failedRunIds.Remove(listed.Id);
-                            continue;
-                        }
+                        // A run that is now on disk is no longer a failure.
+                        failedRunIds.Remove(listed.Id);
+                        continue;
                     }
 
                     var run = listed;
@@ -223,7 +234,8 @@ public sealed class RetrievalPipeline(
                         }
                     }
 
-                    await runs.WriteAsync(run, cancellationToken).ConfigureAwait(false);
+                    pageRuns.Add(run);
+                    index[run.Id] = run;
                     runsWritten++;
                     if (!existingIdSet.Contains(run.Id))
                     {
@@ -233,6 +245,12 @@ public sealed class RetrievalPipeline(
 
                     writtenThisPass.Add(run.Id);
                     failedRunIds.Remove(run.Id);
+                }
+
+                // ADR-109: persist the page durably BEFORE the manifest checkpoint (data first).
+                if (pageRuns.Count > 0)
+                {
+                    await runs.AppendAsync(pageRuns, cancellationToken).ConfigureAwait(false);
                 }
 
                 // ADR-104: with a descending list, a page that adds no new runs means every
@@ -287,32 +305,6 @@ public sealed class RetrievalPipeline(
             // ADR-84/91: any other failure aborts Failed with a best-effort sanitized commit.
             await CommitAsync(ManifestStatus.Failed, DescribeError(exception)).ConfigureAwait(false);
             return Result(ManifestStatus.Failed, pagesFetched, runsWritten, failedRunIds);
-        }
-    }
-
-    /// <summary>
-    /// ADR-7/R11/ADR-83: a corrupt, unreadable, or stale-schema existing run is treated as
-    /// missing and re-fetched/rewritten - run files are a repairable cache. The manifest's
-    /// schema mismatch stays fatal (ADR-8) because the manifest is authoritative state, and
-    /// reporting still aborts on a stale run schema (ADR-77) since it cannot repair offline.
-    /// </summary>
-    private async Task<BuildRun?> TryReadExistingRunAsync(int runId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await runs.TryReadAsync(runId, cancellationToken).ConfigureAwait(false);
-        }
-        catch (CorruptRunFileException)
-        {
-            return null;
-        }
-        catch (UnsupportedSchemaVersionException)
-        {
-            return null;
-        }
-        catch (IOException)
-        {
-            return null;
         }
     }
 

@@ -30,6 +30,7 @@ public sealed class RetrievalPipelineTests
                 "list:<start>",
                 "progress:page:1:1",
                 "run:1",
+                "replace:1",
                 "manifest:completed",
                 "progress:completed:1:1"
             ],
@@ -85,6 +86,25 @@ public sealed class RetrievalPipelineTests
         Assert.Empty(runs.Writes);
     }
 
+    [Fact]
+    public async Task Resume_reads_the_store_once_and_skips_from_the_index()
+    {
+        var (pipeline, source, runs, manifests, clock, _, _) = Create();
+        runs.Put(DetailCompleteRun(1, clock));
+        runs.Put(DetailCompleteRun(2, clock));
+        manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null), TestRuns.Create(id: 2, definitionId: null)], null));
+
+        var result = await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
+
+        Assert.Equal(ManifestStatus.Completed, result.Status);
+
+        // ADR-109: one read builds the in-memory index; the skip needs no further disk reads or fetches.
+        Assert.Equal(1, runs.ReadAllCalls);
+        Assert.Empty(source.DetailCalls);
+        Assert.Empty(runs.Writes);
+    }
+
     // ---- rebuild / replay skip (ADR-7/R11) ----
 
     [Fact]
@@ -123,7 +143,7 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Seed(1);
-        runs.Unreadable.Add(1);
+        runs.Malformed.Add(1);
         manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
         source.Detail(1, DetailCompleteRun(1, clock));
@@ -140,7 +160,7 @@ public sealed class RetrievalPipelineTests
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
         runs.Seed(1);
-        runs.StaleSchema.Add(1);
+        runs.Unsupported.Add(1);
         manifests.Current = ManifestWith(ManifestStatus.InProgress, clock, fingerprint: Fingerprint(DetailPolicy.FillMissing));
         source.Page(null, new BuildPage([TestRuns.Create(id: 1, definitionId: null)], null));
         source.Detail(1, DetailCompleteRun(1, clock));
@@ -150,7 +170,7 @@ public sealed class RetrievalPipelineTests
         Assert.Equal(ManifestStatus.Completed, result.Status);
         Assert.Equal([1], source.DetailCalls);
         Assert.Single(runs.Writes);
-        Assert.Equal(RunSource.Detail, (await runs.TryReadAsync(1, CancellationToken.None))!.Source);
+        Assert.Equal(RunSource.Detail, runs.Get(1)!.Source);
     }
 
     [Fact]
@@ -167,7 +187,7 @@ public sealed class RetrievalPipelineTests
         await pipeline.RunAsync(Query(DetailPolicy.FillMissing), CancellationToken.None);
 
         Assert.Empty(runs.Writes);
-        Assert.Equal(RunSource.Detail, (await runs.TryReadAsync(1, CancellationToken.None))!.Source);
+        Assert.Equal(RunSource.Detail, runs.Get(1)!.Source);
     }
 
     // ---- commit failure / sanitization / cancellation ----

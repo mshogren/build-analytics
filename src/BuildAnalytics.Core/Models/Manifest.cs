@@ -13,7 +13,7 @@ public enum ManifestStatus
 
 /// <summary>
 /// Retrieval progress for one output root. There is no listing cursor (ADR-108); the durable
-/// progress marker is the set of run files on disk.
+/// progress marker is the set of runs in <c>runs.jsonl</c> (ADR-109).
 /// List inputs are defensively copied and equality is structural.
 /// </summary>
 public sealed record Manifest

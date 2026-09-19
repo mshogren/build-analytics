@@ -18,8 +18,8 @@ public static class ManifestCompatibility
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(existingRunIds);
 
-        // ADR-92: a completed root is bound to its query regardless of runs/. Otherwise
-        // only a non-empty runs/ with a different fingerprint is a conflict (ADR-3/66).
+        // ADR-92/109: a completed root is bound to its query regardless of the run log.
+        // Otherwise only a non-empty run log with a different fingerprint is a conflict (ADR-3/66).
         if ((requireMatch || existingRunIds.Count > 0) &&
             !string.Equals(manifest.Fingerprint, expectedFingerprint, StringComparison.Ordinal))
         {

@@ -122,13 +122,17 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
 
     public List<BuildRun> Writes { get; } = [];
 
+    public List<IReadOnlyList<BuildRun>> Replacements { get; } = [];
+
+    public int ReadAllCalls { get; private set; }
+
     public HashSet<int> FailOnWrite { get; } = [];
 
-    public HashSet<int> Unreadable { get; } = [];
+    /// <summary>Ids that exist as a malformed line: excluded from the read result and counted.</summary>
+    public HashSet<int> Malformed { get; } = [];
 
-    public HashSet<int> StaleSchema { get; } = [];
-
-    public HashSet<int> ListedButAbsent { get; } = [];
+    /// <summary>Ids that exist as an unsupported-schema line: excluded from the read result and counted.</summary>
+    public HashSet<int> Unsupported { get; } = [];
 
     public Dictionary<int, Exception> WriteFailures { get; } = [];
 
@@ -142,44 +146,54 @@ internal sealed class RecordingRunStore(EventLog? log = null) : IRunStore
 
     public void Put(BuildRun run) => _runs[run.Id] = run;
 
-    public Task WriteAsync(BuildRun run, CancellationToken cancellationToken)
+    public BuildRun? Get(int runId) => _runs.TryGetValue(runId, out var run) ? run : null;
+
+    public Task<RunReadResult> ReadAllAsync(CancellationToken cancellationToken)
     {
-        if (WriteFailures.TryGetValue(run.Id, out var failure))
+        ReadAllCalls++;
+        var runs = _runs.Values
+            .Where(run => !Malformed.Contains(run.Id) && !Unsupported.Contains(run.Id))
+            .OrderBy(run => run.Id)
+            .ToArray();
+        return Task.FromResult(new RunReadResult(runs, Malformed.Count, Unsupported.Count));
+    }
+
+    public Task AppendAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
+    {
+        foreach (var run in runs)
         {
-            throw failure;
+            if (WriteFailures.TryGetValue(run.Id, out var failure))
+            {
+                throw failure;
+            }
+
+            if (FailOnWrite.Contains(run.Id))
+            {
+                throw new StorageException($"Injected write failure for run {run.Id}.");
+            }
+
+            _runs[run.Id] = run;
+            Malformed.Remove(run.Id);
+            Unsupported.Remove(run.Id);
+            Writes.Add(run);
+            log?.Add($"run:{run.Id}");
         }
 
-        if (FailOnWrite.Contains(run.Id))
-        {
-            throw new StorageException($"Injected write failure for run {run.Id}.");
-        }
-
-        _runs[run.Id] = run;
-        Unreadable.Remove(run.Id);
-        StaleSchema.Remove(run.Id);
-        Writes.Add(run);
-        log?.Add($"run:{run.Id}");
         return Task.CompletedTask;
     }
 
-    public Task<BuildRun?> TryReadAsync(int runId, CancellationToken cancellationToken)
+    public Task ReplaceAllAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
     {
-        if (Unreadable.Contains(runId))
+        _runs.Clear();
+        foreach (var run in runs)
         {
-            throw new CorruptRunFileException(runId);
+            _runs[run.Id] = run;
         }
 
-        if (StaleSchema.Contains(runId))
-        {
-            throw new UnsupportedSchemaVersionException(BuildRun.CurrentSchemaVersion, BuildRun.CurrentSchemaVersion + 1);
-        }
-
-        return Task.FromResult(_runs.TryGetValue(runId, out var run) ? run : null);
+        Replacements.Add(runs.ToArray());
+        log?.Add($"replace:{runs.Count}");
+        return Task.CompletedTask;
     }
-
-    public Task<IReadOnlyList<int>> ListRunIdsAsync(CancellationToken cancellationToken)
-        => Task.FromResult<IReadOnlyList<int>>(
-            _runs.Keys.Concat(ListedButAbsent).Distinct().OrderBy(id => id).ToArray());
 }
 
 /// <summary>Records the ordered progress events the pipeline emits (ADR-96) and mirrors them into the shared event log.</summary>

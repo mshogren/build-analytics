@@ -2,12 +2,26 @@ using BuildAnalytics.Core.Models;
 
 namespace BuildAnalytics.Core.Ports;
 
-/// <summary>Stores and reads raw run payloads, keyed by run id.</summary>
+/// <summary>
+/// Result of reading the append-only run log (ADR-109). <see cref="Runs"/> is deduped
+/// (last line wins) and sorted by id. Malformed/unsupported lines are excluded from
+/// <see cref="Runs"/> and counted so the caller can repair or abort.
+/// </summary>
+public sealed record RunReadResult(
+    IReadOnlyList<BuildRun> Runs,
+    int MalformedLineCount,
+    int UnsupportedSchemaLineCount);
+
+/// <summary>
+/// Stores raw run payloads in a single append-only log (<c>runs.jsonl</c>), one compact
+/// JSON object per line. There is no per-id canonical path; the id inside a line is
+/// authoritative.
+/// </summary>
 public interface IRunStore
 {
-    Task WriteAsync(BuildRun run, CancellationToken cancellationToken);
+    Task<RunReadResult> ReadAllAsync(CancellationToken cancellationToken);
 
-    Task<BuildRun?> TryReadAsync(int runId, CancellationToken cancellationToken);
+    Task AppendAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<int>> ListRunIdsAsync(CancellationToken cancellationToken);
+    Task ReplaceAllAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken);
 }

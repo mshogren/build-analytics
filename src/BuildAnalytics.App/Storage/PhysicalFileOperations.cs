@@ -33,4 +33,23 @@ public sealed class PhysicalFileOperations : IFileOperations
         File.Move(sourcePath, destinationPath, overwrite: true);
         return Task.CompletedTask;
     }
+
+    public async Task AppendAsync(string path, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(path));
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        await using var stream = new FileStream(
+            path,
+            FileMode.Append,
+            FileAccess.Write,
+            FileShare.Read,
+            bufferSize: 4096,
+            useAsync: true);
+        await stream.WriteAsync(content, cancellationToken);
+        stream.Flush(flushToDisk: true);
+    }
 }

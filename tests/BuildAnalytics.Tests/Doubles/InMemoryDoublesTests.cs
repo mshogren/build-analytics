@@ -7,33 +7,39 @@ namespace BuildAnalytics.Tests.Doubles;
 public sealed class InMemoryDoublesTests
 {
     [Fact]
-    public async Task InMemoryRunStore_WriteThenReadRoundTrips()
+    public async Task InMemoryRunStore_AppendThenReadRoundTrips()
     {
         var store = new InMemoryRunStore();
         var run = TestRuns.Create(id: 5);
 
-        await store.WriteAsync(run, CancellationToken.None);
+        await store.AppendAsync([run], CancellationToken.None);
 
-        Assert.Equal(run, await store.TryReadAsync(5, CancellationToken.None));
+        Assert.Equal([run], (await store.ReadAllAsync(CancellationToken.None)).Runs);
     }
 
     [Fact]
-    public async Task InMemoryRunStore_TryReadAsync_MissingNull()
+    public async Task InMemoryRunStore_ReadAllAsync_AbsentIsEmpty()
     {
         var store = new InMemoryRunStore();
 
-        Assert.Null(await store.TryReadAsync(99, CancellationToken.None));
+        var result = await store.ReadAllAsync(CancellationToken.None);
+
+        Assert.Empty(result.Runs);
+        Assert.Equal(0, result.MalformedLineCount);
+        Assert.Equal(0, result.UnsupportedSchemaLineCount);
     }
 
     [Fact]
-    public async Task InMemoryRunStore_ListRunIdsAsync_ReturnsWrittenIds()
+    public async Task InMemoryRunStore_Append_DedupesByLastWriteAndSorts()
     {
         var store = new InMemoryRunStore();
 
-        await store.WriteAsync(TestRuns.Create(id: 3), CancellationToken.None);
-        await store.WriteAsync(TestRuns.Create(id: 1), CancellationToken.None);
+        await store.AppendAsync([TestRuns.Create(id: 3), TestRuns.Create(id: 1)], CancellationToken.None);
+        await store.AppendAsync([TestRuns.Create(id: 3, buildNumber: "second")], CancellationToken.None);
 
-        Assert.Equal([1, 3], await store.ListRunIdsAsync(CancellationToken.None));
+        var runs = (await store.ReadAllAsync(CancellationToken.None)).Runs;
+        Assert.Equal([1, 3], runs.Select(run => run.Id));
+        Assert.Equal("second", runs.Single(run => run.Id == 3).BuildNumber);
     }
 
     [Fact]
@@ -62,17 +68,29 @@ internal sealed class InMemoryRunStore : IRunStore
 {
     private readonly Dictionary<int, BuildRun> _runs = [];
 
-    public Task WriteAsync(BuildRun run, CancellationToken cancellationToken)
+    public Task<RunReadResult> ReadAllAsync(CancellationToken cancellationToken)
+        => Task.FromResult(new RunReadResult(_runs.Values.OrderBy(run => run.Id).ToArray(), 0, 0));
+
+    public Task AppendAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
     {
-        _runs[run.Id] = run;
+        foreach (var run in runs)
+        {
+            _runs[run.Id] = run;
+        }
+
         return Task.CompletedTask;
     }
 
-    public Task<BuildRun?> TryReadAsync(int runId, CancellationToken cancellationToken)
-        => Task.FromResult(_runs.TryGetValue(runId, out var run) ? run : null);
+    public Task ReplaceAllAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
+    {
+        _runs.Clear();
+        foreach (var run in runs)
+        {
+            _runs[run.Id] = run;
+        }
 
-    public Task<IReadOnlyList<int>> ListRunIdsAsync(CancellationToken cancellationToken)
-        => Task.FromResult<IReadOnlyList<int>>(_runs.Keys.OrderBy(id => id).ToArray());
+        return Task.CompletedTask;
+    }
 }
 
 internal sealed class InMemoryManifestStore : IManifestStore

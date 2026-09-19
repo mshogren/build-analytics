@@ -89,14 +89,16 @@ Resolving an HTTP-date `Retry-After` happens in the App HTTP adapter.
 <outputRoot>/
   manifest.json          # retrieval progress + fingerprint
   manifest.lock          # exclusive single-writer lock
-  runs/<runId>/run.json  # raw build payload; atomic write
+  runs.jsonl             # append-only raw runs; one compact JSON object per line
 ```
 
-Canonical run path is `runs/<runId>/run.json`. The old `<id>__<name>` folder is
-**not** used: definition renames created duplicate folders for one run id and
-broke upsert.
+Canonical storage is the single `runs.jsonl` log (ADR-109); the `id` inside a
+line is authoritative. The old `<id>__<name>` folder and the per-run
+`runs/<runId>/run.json` file are **not** used: definition renames created
+duplicate folders for one run id and broke upsert, and per-file writes made every
+pass scan the whole tree.
 
-`run.json` field contract:
+`runs.jsonl` line field contract:
 
 ```
 schemaVersion, source(list|detail), fetchedAt,
@@ -135,17 +137,18 @@ Canonical form: `key=value` lines joined by `\n` (`org=`, `project=`, `minTime=`
 timestamp renders as `-`. The hash is SHA-256 lowercase hex. A golden-vector test
 pins this exact format, so accidental canonicalization drift fails loudly.
 
-A mismatch against a non-empty `runs/` is a typed error telling the operator to
+A mismatch against a non-empty run log is a typed error telling the operator to
 use a new output root.
 
 ## Manifest & Durability
 
 `manifest.json` holds: `schemaVersion`, fingerprint, status, timestamps,
 `lastError`, and failed run ids. There is **no cursor** (ADR-108): the durable
-progress marker is the set of run files, so a re-run lists from the beginning and
-skips whatever is already on disk (ADR-78).
+progress marker is the set of runs in `runs.jsonl`, so a re-run lists from the
+beginning and skips whatever is already on disk (ADR-78).
 
-Durability protocol, identical for `run.json` and `manifest.json`:
+Durability protocol. Appends (ADR-109) write the line(s) then
+`Flush(flushToDisk: true)`. Full rewrites (compaction and `manifest.json`) use:
 
 1. write to a temp file
 2. `Flush(flushToDisk: true)`
@@ -219,7 +222,7 @@ truncate.
 6. **CLI.** Breaking rewrite accepted. Legacy flags are removed outright; no
    migration shim and no deprecation/parity phase.
 7. **Corrupt manifest.** Quarantine to `manifest.corrupt-<utc>-<guid>.json`,
-   rescan `runs/`, restart from `cursor=null`, upsert. Skip only files that are
+   re-list from the beginning, and skip only log entries that are
    `detail`-complete under the active policy.
 8. **Schema version.** `schemaVersion: 1`. Any mismatch (older or newer) is a
    typed error directing the operator to a new output root. No migration code,
@@ -263,16 +266,16 @@ truncate.
     the file is absent; an unparseable run file throws `CorruptRunFileException`.
     Only the manifest is quarantined.
 26. **Fault seam.** The file adapters depend on `IFileOperations`
-    (`WriteTempAsync` / `FlushToDiskAsync` / `RenameAsync`); tests inject a
-    decorator that throws or blocks at a chosen stage. Supersedes the proposed
-    `IStorageFaults` checkpoint interface — equivalent and cleaner.
+    (`WriteTempAsync` / `FlushToDiskAsync` / `RenameAsync` / `AppendAsync`);
+    tests inject a decorator that throws or blocks at a chosen stage. Supersedes
+    the proposed `IStorageFaults` checkpoint interface — equivalent and cleaner.
 27. **`lastError` sanitization** is owned by the error-capture layer (HTTP
     adapter / pipeline), not the store. The store persists what it is given and
     injects no PAT or absolute path.
 28. **Fingerprint compatibility** is a pure helper,
     `ManifestCompatibility.EnsureCompatible(manifest, expectedFingerprint, existingRunIds)`,
     called by the pipeline. It throws `FingerprintMismatchException` only when
-    `runs/` is non-empty and fingerprints differ. The frozen `IManifestStore` has
+    the run log is non-empty and fingerprints differ. The frozen `IManifestStore` has
     no fingerprint parameter.
 
 29. **`Manifest` is a value object too.** It defensively copies `FailedRunIds` /
@@ -314,15 +317,14 @@ truncate.
     escaping every regex metacharacter except `*` / `?`; then union, sort, and
     distinct. No `name=` query parameter — the endpoint filter does not cover
     `path`.
-42. **Run-file validation.** A deserialized run file must have `Id > 0` **and**
-    `Id` equal to its directory key; otherwise `CorruptRunFileException`. A
-    wrong-shape or partial file is corrupt, never silently defaulted (a missing
-    `id` must not create a bogus `runs/0` entry). A requested `runId <= 0` throws
-    `ArgumentOutOfRangeException`; `WriteAsync` likewise rejects a run with
-    `Id <= 0`, and `ListRunIdsAsync` skips non-positive directories.
-43. **Flush is verified, not assumed.** Tests assert `FlushToDiskAsync` runs on a
-    non-empty temp before rename and fault-inject at write-temp and flush; true
-    fsync durability is explicitly out of unit-test scope.
+42. **Run-log line validation.** A deserialized line must have `Id > 0`; otherwise
+    it is malformed, counted, and excluded (ADR-109). A wrong-shape or partial
+    line is never silently defaulted, and the line's own `id` is authoritative
+    (there is no directory key). `AppendAsync`/`ReplaceAllAsync` reject a run with
+    `Id <= 0` via `ArgumentOutOfRangeException`.
+43. **Flush is verified, not assumed.** Tests assert the append seam flushes and
+    that compaction runs `FlushToDiskAsync` on a non-empty temp before rename;
+    true fsync durability is explicitly out of unit-test scope.
 44. **Lock failure typing and cleanup.** Only "already locked" maps to
     `OutputRootInUseException`; other IO failures map to `StorageException`. The
     opened lock stream is disposed on any post-open failure.
@@ -481,7 +483,7 @@ truncate.
     itself throws, propagate. `OperationCanceledException` is rethrown with no
     commit. (This replaces the earlier “commit failure propagates” rule.)
 92. **Completed roots are bound to their query.** For a `completed` manifest a
-    fingerprint mismatch is a typed error **regardless** of `runs/`, even when the
+    fingerprint mismatch is a typed error **regardless** of the run log, even when the
     root is empty. The empty-runs allowance applies only when no manifest exists
     or the manifest is not completed.
 93. **Seen-token set resets on restart.** The set must **not** persist across the
@@ -620,12 +622,12 @@ All findings accepted and folded into the sections above.
 | ID | Finding | Resolution |
 |---|---|---|
 | F1 | Concurrent writers on one output root | Lock file + typed `OutputRootInUse`; reader tolerates writers |
-| F2 | Manifest durability unspecified | Single temp→flush→rename protocol for both files; scope stated |
+| F2 | Manifest durability unspecified | Durable append + temp→flush→rename for compaction and manifest; scope stated |
 | F3 | `maxRuns` overshoot (~1000x) | Trim `$top` to the remaining budget; leave `paused` |
-| F4 | `<id>__<name>` breaks upsert | Canonical `runs/<runId>/run.json` |
-| F5 | Two sources of truth | Cursor authoritative; reconcile by scan; `source` in each file |
+| F4 | `<id>__<name>` breaks upsert | Canonical single append-only `runs.jsonl` (ADR-109) |
+| F5 | Two sources of truth | Manifest + append-only run log; reconcile by scan; `source` per line |
 | F6 | Core charter ambiguous | Core = pure + ports; all IO in App; architecture test |
-| F7 | Detail opt-in undefined | Enumerated `run.json` contract; policy in fingerprint |
+| F7 | Detail opt-in undefined | Enumerated run-line contract; policy in fingerprint |
 | F8 | Fingerprint incomplete/mis-scoped | Fingerprint raw inputs; drop `outputRoot`/`maxRuns` |
 | F9 | Status machine undefined | Explicit machine; cap/throttle → `paused` |
 | F10 | No seam for crash tests | Inject store/FS port; tests fail between write/rename/commit |
@@ -645,9 +647,9 @@ without duplicates; repeated token bounded; empty first page idempotent; **no
 per-run overfetch** (0 detail calls when the list item satisfies the contract);
 Ctrl+C cancellation; one page in memory.
 
-**B — manifest + raw files.** Atomic `run.json` write; the durable run files are
-the progress marker (no cursor, ADR-108); replay is idempotent; durability across
-reopen; fingerprint scoping; status machine;
+**B — manifest + raw runs.** Durable append to `runs.jsonl`; atomic compaction; the
+run log is the progress marker (no cursor, ADR-108); replay is idempotent;
+durability across reopen; fingerprint scoping; status machine;
 single-writer lock; no credentials or absolute paths in artifacts.
 
 **C — retry/backoff.** Deterministic waits 1/2/4/8s; both `Retry-After` forms;

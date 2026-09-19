@@ -344,13 +344,13 @@ public sealed class FileManifestStoreTests
         using var root = new TempOutputRoot();
         var runStore = new FileRunStore(root.Path, new PhysicalFileOperations());
         var run = TestRuns.Create(id: 11);
-        await runStore.WriteAsync(run, CancellationToken.None);
+        await runStore.AppendAsync([run], CancellationToken.None);
         await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), "{ not json", CancellationToken.None);
 
         using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
         Assert.Null(await store.TryReadAsync(CancellationToken.None));
 
-        Assert.Equal(run, await runStore.TryReadAsync(11, CancellationToken.None));
+        Assert.Equal([run], (await runStore.ReadAllAsync(CancellationToken.None)).Runs);
     }
 
     [Fact]
@@ -358,22 +358,22 @@ public sealed class FileManifestStoreTests
     {
         using var root = new TempOutputRoot();
         var runStore = new FileRunStore(root.Path, new PhysicalFileOperations());
-        await runStore.WriteAsync(TestRuns.Create(id: 11, buildNumber: "first"), CancellationToken.None);
+        await runStore.AppendAsync([TestRuns.Create(id: 11, buildNumber: "first")], CancellationToken.None);
         await File.WriteAllTextAsync(Path.Combine(root.Path, "manifest.json"), "{ not json", CancellationToken.None);
 
         using var store = new FileManifestStore(root.Path, new PhysicalFileOperations());
         Assert.Null(await store.TryReadAsync(CancellationToken.None));
-        Assert.Equal([11], await runStore.ListRunIdsAsync(CancellationToken.None));
+        Assert.Equal([11], (await runStore.ReadAllAsync(CancellationToken.None)).Runs.Select(run => run.Id));
 
         var rebuilt = new Manifest(
             Manifest.CurrentSchemaVersion, "fp", ManifestStatus.InProgress,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, null, []);
         await store.CommitAsync(rebuilt, CancellationToken.None);
-        await runStore.WriteAsync(TestRuns.Create(id: 11, buildNumber: "second"), CancellationToken.None);
+        await runStore.AppendAsync([TestRuns.Create(id: 11, buildNumber: "second")], CancellationToken.None);
 
         var read = await store.TryReadAsync(CancellationToken.None);
         Assert.NotNull(read);
-        Assert.Equal([11], await runStore.ListRunIdsAsync(CancellationToken.None));
+        Assert.Equal([11], (await runStore.ReadAllAsync(CancellationToken.None)).Runs.Select(run => run.Id));
     }
 
     [Fact]

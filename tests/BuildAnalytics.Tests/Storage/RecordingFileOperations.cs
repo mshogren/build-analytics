@@ -6,7 +6,8 @@ public enum FileOperation
 {
     WriteTemp,
     FlushToDisk,
-    Rename
+    Rename,
+    Append
 }
 
 /// <summary>
@@ -54,6 +55,13 @@ internal sealed class RecordingFileOperations : IFileOperations
         Record(FileOperation.Rename, destinationPath);
         await _inner.RenameAsync(sourcePath, destinationPath, cancellationToken);
         After(FileOperation.Rename, destinationPath);
+    }
+
+    public async Task AppendAsync(string path, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
+    {
+        Record(FileOperation.Append, path);
+        await _inner.AppendAsync(path, content, cancellationToken);
+        After(FileOperation.Append, path);
     }
 
     private void Record(FileOperation operation, string path)

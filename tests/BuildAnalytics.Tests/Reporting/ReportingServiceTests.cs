@@ -122,7 +122,7 @@ public sealed class ReportingServiceTests
         manifests.Current = ManifestWith(ManifestStatus.Completed);
         runs.Put(Run(1, "succeeded"));
         runs.Seed(2);
-        runs.Unreadable.Add(2);
+        runs.Malformed.Add(2);
 
         var result = await service.GenerateAsync(CancellationToken.None);
 
@@ -139,24 +139,9 @@ public sealed class ReportingServiceTests
         var (service, manifests, runs, _) = Create();
         manifests.Current = ManifestWith(ManifestStatus.Completed);
         runs.Seed(1);
-        runs.StaleSchema.Add(1);
+        runs.Unsupported.Add(1);
 
         await Assert.ThrowsAsync<UnsupportedSchemaVersionException>(() => service.GenerateAsync(CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task Listed_but_absent_run_is_skipped_silently()
-    {
-        var (service, manifests, runs, _) = Create();
-        manifests.Current = ManifestWith(ManifestStatus.Completed);
-        runs.Put(Run(1, "succeeded"));
-        runs.ListedButAbsent.Add(99);
-
-        var result = await service.GenerateAsync(CancellationToken.None);
-
-        Assert.Equal(1, result.RunsRead);
-        Assert.Equal(0, result.CorruptSkipped);
-        Assert.Equal(1, result.Report.Summary.Overall.RunCount);
     }
 
     [Fact]
@@ -168,11 +153,9 @@ public sealed class ReportingServiceTests
             Path.Combine(root.Path, "manifest.json"),
             JsonSerializer.SerializeToUtf8Bytes(ManifestWith(ManifestStatus.Completed), BuildAnalyticsJson.Options));
 
-        var runDirectory = Path.Combine(root.Path, "runs", "1");
-        Directory.CreateDirectory(runDirectory);
         await File.WriteAllBytesAsync(
-            Path.Combine(runDirectory, "run.json"),
-            JsonSerializer.SerializeToUtf8Bytes(Run(1, "succeeded"), BuildAnalyticsJson.Options));
+            Path.Combine(root.Path, "runs.jsonl"),
+            [.. JsonSerializer.SerializeToUtf8Bytes(Run(1, "succeeded"), BuildAnalyticsJson.Options), (byte)'\n']);
 
         var beforePaths = Directory
             .GetFileSystemEntries(root.Path, "*", SearchOption.AllDirectories)

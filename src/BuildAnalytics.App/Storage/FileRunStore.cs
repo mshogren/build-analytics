@@ -1,6 +1,5 @@
-using System.Globalization;
+using System.Text;
 using System.Text.Json;
-using BuildAnalytics.Core.Errors;
 using BuildAnalytics.Core;
 using BuildAnalytics.Core.Models;
 using BuildAnalytics.Core.Ports;
@@ -8,111 +7,130 @@ using BuildAnalytics.Core.Ports;
 namespace BuildAnalytics.App.Storage;
 
 /// <summary>
-/// File-backed run store. Canonical layout: <c>&lt;outputRoot&gt;/runs/&lt;runId&gt;/run.json</c>.
-/// Writes are atomic and upsert by run id.
+/// File-backed run store. Canonical layout (ADR-109): one append-only
+/// <c>&lt;outputRoot&gt;/runs.jsonl</c> with one compact JSON object per line. Reads dedupe by
+/// id (last line wins); compaction rewrites atomically via <see cref="AtomicFileWriter"/>.
 /// </summary>
 public sealed class FileRunStore : IRunStore
 {
-    private readonly string _runsRoot;
+    private readonly string _logPath;
+    private readonly IFileOperations _fileOperations;
     private readonly AtomicFileWriter _writer;
 
     public FileRunStore(string outputRoot, IFileOperations fileOperations)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputRoot);
 
-        _runsRoot = Path.Combine(Path.GetFullPath(outputRoot), "runs");
+        _logPath = Path.Combine(Path.GetFullPath(outputRoot), "runs.jsonl");
+        _fileOperations = fileOperations;
         _writer = new AtomicFileWriter(fileOperations);
     }
 
-    public Task WriteAsync(BuildRun run, CancellationToken cancellationToken)
+    public async Task<RunReadResult> ReadAllAsync(CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(run);
-        if (run.Id <= 0)
+        if (!File.Exists(_logPath))
         {
-            throw new ArgumentOutOfRangeException(nameof(run), run.Id, "Run id must be positive.");
+            return new RunReadResult([], 0, 0);
         }
 
-        var content = JsonSerializer.SerializeToUtf8Bytes(run, BuildAnalyticsJson.Options);
-        return _writer.WriteAsync(RunPath(run.Id), content, cancellationToken);
-    }
+        var bytes = await StorageFileAccess.ReadAllBytesAsync(_logPath, cancellationToken).ConfigureAwait(false);
+        var runs = new Dictionary<int, BuildRun>();
+        var malformed = 0;
+        var unsupported = 0;
 
-    public async Task<BuildRun?> TryReadAsync(int runId, CancellationToken cancellationToken)
-    {
-        if (runId <= 0)
+        foreach (var line in SplitLines(bytes))
         {
-            throw new ArgumentOutOfRangeException(nameof(runId), runId, "Run id must be positive.");
-        }
-
-        var path = RunPath(runId);
-        if (!File.Exists(path))
-        {
-            return null;
-        }
-
-        var bytes = await StorageFileAccess.ReadAllBytesAsync(path, cancellationToken);
-
-        try
-        {
-            using var document = JsonDocument.Parse(bytes);
-            var root = document.RootElement;
-
-            if (root.ValueKind != JsonValueKind.Object ||
-                !root.TryGetProperty("schemaVersion", out var schemaVersionElement) ||
-                schemaVersionElement.ValueKind != JsonValueKind.Number ||
-                !schemaVersionElement.TryGetInt32(out var schemaVersion))
-            {
-                throw new CorruptRunFileException(runId);
-            }
-
-            if (schemaVersion != BuildRun.CurrentSchemaVersion)
-            {
-                throw new UnsupportedSchemaVersionException(BuildRun.CurrentSchemaVersion, schemaVersion);
-            }
-
-            var run = root.Deserialize<BuildRun>(BuildAnalyticsJson.Options)
-                ?? throw new CorruptRunFileException(runId);
-
-            if (run.Id <= 0 || run.Id != runId)
-            {
-                // R17: a valid-shaped payload whose id is missing or disagrees with the directory key is corrupt.
-                throw new CorruptRunFileException(runId);
-            }
-
-            return run;
-        }
-        catch (JsonException exception)
-        {
-            throw new CorruptRunFileException(runId, exception);
-        }
-    }
-
-    public Task<IReadOnlyList<int>> ListRunIdsAsync(CancellationToken cancellationToken)
-    {
-        if (!Directory.Exists(_runsRoot))
-        {
-            return Task.FromResult<IReadOnlyList<int>>([]);
-        }
-
-        var ids = new List<int>();
-        foreach (var directory in Directory.EnumerateDirectories(_runsRoot))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (!int.TryParse(Path.GetFileName(directory), NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id <= 0)
+            if (line.Length == 0)
             {
                 continue;
             }
 
-            if (File.Exists(Path.Combine(directory, "run.json")))
+            try
             {
-                ids.Add(id);
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+
+                if (root.ValueKind != JsonValueKind.Object ||
+                    !root.TryGetProperty("schemaVersion", out var schemaVersionElement) ||
+                    schemaVersionElement.ValueKind != JsonValueKind.Number ||
+                    !schemaVersionElement.TryGetInt32(out var schemaVersion))
+                {
+                    malformed++;
+                    continue;
+                }
+
+                if (schemaVersion != BuildRun.CurrentSchemaVersion)
+                {
+                    unsupported++;
+                    continue;
+                }
+
+                var run = root.Deserialize<BuildRun>(BuildAnalyticsJson.Options);
+                if (run is null || run.Id <= 0)
+                {
+                    malformed++;
+                    continue;
+                }
+
+                // ADR-109: a later line with the same id supersedes an earlier one.
+                runs[run.Id] = run;
+            }
+            catch (JsonException)
+            {
+                // A truncated/unparseable line (including a crash tail) is skipped and counted.
+                malformed++;
             }
         }
 
-        ids.Sort();
-        return Task.FromResult<IReadOnlyList<int>>(ids);
+        var ordered = runs.Values.OrderBy(run => run.Id).ToArray();
+        return new RunReadResult(ordered, malformed, unsupported);
     }
 
-    private string RunPath(int runId)
-        => Path.Combine(_runsRoot, runId.ToString(CultureInfo.InvariantCulture), "run.json");
+    public Task AppendAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(runs);
+
+        if (runs.Count == 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        return _fileOperations.AppendAsync(_logPath, SerializeLines(runs), cancellationToken);
+    }
+
+    public Task ReplaceAllAsync(IReadOnlyList<BuildRun> runs, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(runs);
+
+        var content = runs.Count == 0 ? ReadOnlyMemory<byte>.Empty : SerializeLines(runs);
+        return _writer.WriteAsync(_logPath, content, cancellationToken);
+    }
+
+    private static ReadOnlyMemory<byte> SerializeLines(IReadOnlyList<BuildRun> runs)
+    {
+        using var stream = new MemoryStream();
+        foreach (var run in runs)
+        {
+            ArgumentNullException.ThrowIfNull(run);
+            if (run.Id <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(runs), run.Id, "Run id must be positive.");
+            }
+
+            // BuildAnalyticsJson is compact (no indentation); one object per newline-terminated line.
+            JsonSerializer.Serialize(stream, run, BuildAnalyticsJson.Options);
+            stream.WriteByte((byte)'\n');
+        }
+
+        return stream.ToArray();
+    }
+
+    private static IEnumerable<string> SplitLines(byte[] bytes)
+    {
+        var text = Encoding.UTF8.GetString(bytes);
+        foreach (var line in text.Split('\n'))
+        {
+            yield return line.EndsWith('\r') ? line[..^1] : line;
+        }
+    }
 }
