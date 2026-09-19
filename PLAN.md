@@ -175,19 +175,12 @@ concurrent writer by skipping incomplete files.
 
 ## Status Machine
 
-> **Superseded by ADR-110.** There is no status machine. The CLI exits `1` on a
-> runtime failure; nothing is persisted.
+> **Superseded by ADR-110.** There is no status machine and no persisted state.
+> The tool retrieves, reports, exits `0`, or exits `1` on a runtime failure.
 
-```
-pending -> in_progress -> completed
-                     \--> paused   (run cap or Retry-After abort; resumable)
-                     \--> failed   (unrecoverable error; resumable after fix)
-```
-
-`completed` means the continuation token is exhausted **and** every page's run
-files are durable. Only `completed` short-circuits a re-run. A cap or throttle
-abort records `paused`, never `completed`, so a later resume cannot silently
-truncate.
+The previous `pending -> in_progress -> completed | paused | failed` machine (with
+`paused` meaning resumable, durable checkpoints and a completed-root short-circuit)
+was removed along with the manifest; ADR-62/67/70/97/100/108 hold that history.
 
 ## Retrieval Rules
 

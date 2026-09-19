@@ -25,8 +25,7 @@ public sealed class ReportingServiceTests
         Assert.Equal(0, result.RunsRead);
         Assert.Equal(0, result.CorruptSkipped);
         Assert.Equal(0, writer.Report!.Summary.Overall.RunCount);
-        Assert.Empty(writer.Report.Summary.Months);
-        Assert.NotNull(writer.Report.Summary);
+        Assert.Empty(writer.Report!.Summary.Months);
     }
 
     [Fact]
