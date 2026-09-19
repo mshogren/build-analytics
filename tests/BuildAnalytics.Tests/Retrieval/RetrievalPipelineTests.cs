@@ -791,6 +791,31 @@ public sealed class RetrievalPipelineTests
     }
 
     [Fact]
+    public async Task Completion_does_not_erase_a_malformed_fragment_from_the_real_log()
+    {
+        using var root = new TempOutputRoot();
+        var logPath = Path.Combine(root.Path, "runs.jsonl");
+        var good = JsonSerializer.Serialize(TestRuns.Create(id: 1), BuildAnalyticsJson.Options);
+        const string fragment = "{\"schemaVersion\":1,\"id\":2";
+        await File.WriteAllTextAsync(logPath, good + "\n" + fragment, CancellationToken.None);
+
+        var clock = new FakeTimeProvider { UtcNow = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero) };
+        var manifests = new RecordingManifestStore { Current = ManifestWith(ManifestStatus.Completed, clock, Fingerprint()) };
+        var source = new FakeBuildSource();
+        source.Page(null, new BuildPage([TestRuns.Create(id: 1)], null));
+        var pipeline = new RetrievalPipeline(
+            source,
+            new FileRunStore(root.Path, new PhysicalFileOperations()),
+            manifests,
+            clock);
+
+        await pipeline.RunAsync(Query(), CancellationToken.None);
+
+        Assert.Contains(fragment, await File.ReadAllTextAsync(logPath, CancellationToken.None), StringComparison.Ordinal);
+        Assert.Equal(1, (await new FileRunStore(root.Path, new PhysicalFileOperations()).ReadAllAsync(CancellationToken.None)).MalformedLineCount);
+    }
+
+    [Fact]
     public async Task Completion_compacts_on_a_later_pass_once_the_bad_line_is_superseded()
     {
         var (pipeline, source, runs, manifests, clock, _, _) = Create();
